@@ -1,3 +1,5 @@
+![Stenographer](assets/logo.png)
+
 # Stenographer
 
 Local-first meeting transcription desktop app for macOS. All audio processing and speech recognition runs entirely on-device — nothing leaves your machine. Powered by **Parakeet TDT V3** (on-device ASR via WebGPU) and the **Cursor SDK** (AI notes generation).
