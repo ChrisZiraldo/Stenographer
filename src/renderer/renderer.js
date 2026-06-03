@@ -153,9 +153,15 @@ function populateSelect(sel, devices, preferHint) {
 
 async function loadModel() {
   goBtn.disabled = true;
-  await engine.loadModel((msg, pct) => {
-    setStatus(msg, 'loading');
-    goBtn.style.setProperty('--progress', `${pct}%`);
+  let maxPct = 0;
+  await engine.loadModel((msg, pct, totalBytes) => {
+    goBtn.textContent = msg;
+    // Only advance the fill bar for large files (encoder is ~300 MB).
+    const BIG_FILE = 50 * 1024 * 1024;
+    if (totalBytes > BIG_FILE && pct > maxPct) {
+      maxPct = pct;
+      goBtn.style.setProperty('--progress', `${pct}%`);
+    }
   });
   setStatus('Ready — pick devices and hit Go', 'ready');
   goBtn.disabled = false;

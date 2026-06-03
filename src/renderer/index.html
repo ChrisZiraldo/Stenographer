@@ -326,14 +326,18 @@
       cursor: not-allowed;
       color: var(--text-faint);
     }
-    /* Loading progress ring */
+    #go-btn.loading { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: rgba(255,255,255,0.8); }
+
+    /* Loading progress fill — left to right */
     #go-btn.loading::before {
       content: '';
       position: absolute;
-      inset: 0;
-      background: conic-gradient(var(--accent) var(--progress, 0%), transparent 0%);
-      border-radius: var(--radius-sm);
-      opacity: 0.35;
+      top: 0; left: 0;
+      height: 100%;
+      width: var(--progress, 0%);
+      background: var(--accent);
+      opacity: 0.45;
+      transition: width 0.4s ease;
     }
 
     @keyframes pulse {

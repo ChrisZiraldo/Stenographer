@@ -46,7 +46,7 @@ export class TranscriptionEngine {
       preprocessorBackend: 'js',
       progress: ({ loaded, total, file }) => {
         const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
-        onProgress?.(`Downloading ${file ?? 'model'}… ${pct}%`, pct);
+        onProgress?.(`Downloading ${file ?? 'model'}… ${pct}%`, pct, total);
       },
     });
 
