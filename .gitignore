@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+.vite/
+out/
+
+# Environment — contains API keys
+.env
+
+# Recordings — generated output, not source
+recordings/
+
+# macOS
+.DS_Store
+
+# Logs
+npm-debug.log*
