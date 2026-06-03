@@ -4,7 +4,8 @@ const { AutoUnpackNativesPlugin } = require('@electron-forge/plugin-auto-unpack-
 module.exports = {
   packagerConfig: {
     asar: true,
-    name: 'Meeting Transcriber',
+    name: 'Stenographer',
+    icon: 'assets/icon',
   },
   rebuildConfig: {},
   makers: [

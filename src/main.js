@@ -31,6 +31,7 @@ function createWindow() {
     title: 'Stenographer',
     backgroundColor: '#0f0f1a',
     titleBarStyle: 'hiddenInset',
+    icon: join(app.getAppPath(), 'assets', 'icon-dock.png'),
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -52,6 +53,9 @@ function createWindow() {
 // ── Permissions ───────────────────────────────────────────────────────────────
 // Grant microphone access to the renderer without a system prompt in dev.
 app.whenReady().then(() => {
+  if (app.dock) {
+    app.dock.setIcon(join(app.getAppPath(), 'assets', 'icon-dock.png'));
+  }
   session.defaultSession.setPermissionRequestHandler(
     (_webContents, permission, callback) => {
       const allowed = ['media', 'microphone', 'audioCapture'].includes(permission);
