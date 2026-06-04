@@ -383,6 +383,19 @@ async function stopRecording() {
   goBtn.classList.remove('recording');
   subtitleEl.textContent = '';
 
+  // Auto-save the WAV on every pause so the meeting audio is never lost.
+  // mainRecBuffer accumulates across pause/resume, so each save is cumulative.
+  if (mainRecBuffer.length > 0 && sessionTimestamp) {
+    const mainPcm  = concatFrames(mainRecBuffer);
+    const hasMic   = myRecBuffer.length > 0;
+    const mixed    = hasMic ? mixBuffers(mainPcm, concatFrames(myRecBuffer)) : mainPcm;
+    const wavBytes = encodeWav(mixed, 16000);
+    window.api.saveAudio({
+      bytes:    Array.from(wavBytes),
+      filePath: `recordings/${sessionTimestamp}/recording.wav`,
+    }).catch((err) => console.warn('[WAV auto-save] Failed:', err.message));
+  }
+
   const hasContent = currentTranscript.trim() || mainRecBuffer.length >= 1000;
   if (hasContent) {
     notesBtn.disabled = false;
