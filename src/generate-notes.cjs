@@ -1,13 +1,16 @@
 /**
- * Standalone notes generator — runs in a plain Node.js child process,
- * NOT inside Electron. This avoids the native ABI mismatch between
- * Electron's bundled Node and native addons like better-sqlite3.
+ * General-purpose streaming agent runner — used for both final meeting-notes
+ * generation and rolling summaries.
  *
- * Called by main.js via child_process.spawn with JSON on stdin:
- *   { transcriptText, notesPath, apiKey, cwd }
+ * Runs in a plain Node.js child process (NOT Electron) to avoid native ABI
+ * mismatches with better-sqlite3 inside Electron's bundled Node.
  *
- * Writes the result JSON to stdout:
- *   { ok: true, notesPath }  or  { ok: false, error: "..." }
+ * Reads JSON from stdin:  { apiKey, cwd, prompt }
+ *
+ * Writes newline-delimited JSON events to stdout:
+ *   { type: 'chunk', text: '...' }   — streamed text from the model
+ *   { type: 'done' }                  — run completed successfully
+ *   { type: 'error', error: '...' }   — fatal error
  */
 
 'use strict';
@@ -25,14 +28,19 @@ process.stdin.on('end', async () => {
   try {
     input = JSON.parse(raw);
   } catch (e) {
-    out({ ok: false, error: `Invalid JSON input: ${e.message}` });
+    emit({ type: 'error', error: `Invalid JSON input: ${e.message}` });
     return;
   }
 
-  const { transcriptText, notesPath, apiKey, cwd, prompt } = input;
+  const { apiKey, cwd, prompt } = input;
 
   if (!apiKey || apiKey === 'cursor_...') {
-    out({ ok: false, error: 'CURSOR_API_KEY not set' });
+    emit({ type: 'error', error: 'CURSOR_API_KEY not set' });
+    return;
+  }
+
+  if (!prompt) {
+    emit({ type: 'error', error: 'No prompt provided' });
     return;
   }
 
@@ -40,32 +48,52 @@ process.stdin.on('end', async () => {
   try {
     ({ Agent, CursorAgentError } = require('@cursor/sdk'));
   } catch (e) {
-    out({ ok: false, error: `@cursor/sdk load failed: ${e.message}` });
+    emit({ type: 'error', error: `@cursor/sdk load failed: ${e.message}` });
     return;
   }
 
+  let agent;
   try {
-    const result = await Agent.prompt(prompt, {
+    agent = await Agent.create({
       apiKey,
       model: { id: 'composer-2.5' },
       local: { cwd: cwd || process.cwd() },
     });
 
+    const run = await agent.send(prompt);
+
+    for await (const event of run.stream()) {
+      if (event.type === 'assistant') {
+        for (const block of event.message.content) {
+          if (block.type === 'text' && block.text) {
+            emit({ type: 'chunk', text: block.text });
+          }
+        }
+      }
+    }
+
+    const result = await run.wait();
     if (result.status === 'error') {
-      out({ ok: false, error: `Agent run failed (id: ${result.id})` });
+      emit({ type: 'error', error: `Agent run failed (id: ${result.id})` });
       return;
     }
 
-    out({ ok: true, notesPath });
+    emit({ type: 'done' });
   } catch (err) {
-    if (CursorAgentError && err instanceof CursorAgentError) {
-      out({ ok: false, error: `Agent startup failed: ${err.message} (retryable: ${err.isRetryable})` });
-    } else {
-      out({ ok: false, error: err.message });
+    const isAgentErr = CursorAgentError && err instanceof CursorAgentError;
+    emit({
+      type: 'error',
+      error: isAgentErr
+        ? `Agent startup failed: ${err.message} (retryable: ${err.isRetryable})`
+        : (err.message || String(err)),
+    });
+  } finally {
+    if (agent) {
+      try { await agent[Symbol.asyncDispose](); } catch { /* best-effort cleanup */ }
     }
   }
 });
 
-function out(obj) {
+function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n');
 }

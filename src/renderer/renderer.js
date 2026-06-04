@@ -53,16 +53,19 @@ let myVAD   = createVAD('Me');   // user's microphone
 let mainRecBuffer = [];   // frames from the main stream (BlackHole / input device)
 let myRecBuffer   = [];   // frames from the mic stream (only when "Include my voice" is on)
 
-// ── Rolling background refinement ────────────────────────────────────────────
-// Every ~45 s we quietly re-transcribe all accumulated audio and replace the
-// transcript panel, giving the user a progressively cleaner transcript while
-// they're still in the meeting.
-let isRefining         = false;   // true while a refinement pass is running
-let liveAfterSnapshot  = '';      // live VAD text that arrived during a refinement pass
-let refinementTimer    = null;
+// ── Rolling live summary ──────────────────────────────────────────────────────
+// Every N minutes, transcribe the new audio since the last tick and stream a
+// short "so far" summary into the notes panel. Off by default.
+let lastSummarizedFrameIdx = 0;   // index into mainRecBuffer at last summary tick
+let prevSummary            = '';  // last generated summary text
+let summaryTimer           = null;
+let isSummarizing          = false;
+let summaryTargetTime      = 0;   // epoch ms when the next summary will fire
+let countdownInterval      = null;
 
-const REFINE_INTERVAL_MS  = 45_000;
-const MIN_FRAMES_TO_REFINE = 100 * 20;  // at least 20 s of audio (100 frames/s × 20)
+// ── Level meter ───────────────────────────────────────────────────────────────
+let currentRmsLevel = 0;
+let levelRafId      = null;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -79,13 +82,29 @@ const passthroughCb  = $('passthrough');
 const captureMicCb    = $('capture-mic');
 const captureMicGroup = $('capture-mic-group');
 const micSel          = $('mic-device');
-const eqBtn          = $('eq-btn');
-const eqPanel       = $('eq-panel');
-const eqClose       = $('eq-close');
-const notesStatus   = $('notes-status');
-const fileBtn       = $('file-btn');
-const fileInput     = $('file-input');
-const dropOverlay   = $('drop-overlay');
+const eqBtn             = $('eq-btn');
+const eqPanel           = $('eq-panel');
+const eqClose           = $('eq-close');
+const settingsBtn       = $('settings-btn');
+const settingsPanel     = $('settings-panel');
+const settingsClose     = $('settings-close');
+const notesStatus       = $('notes-status');
+const fileBtn           = $('file-btn');
+const fileInput         = $('file-input');
+const dropOverlay       = $('drop-overlay');
+const liveTxCb          = $('live-tx-toggle');
+const liveSummaryCb     = $('live-summary-toggle');
+const summaryIntervalEl = $('summary-interval');
+const summaryIntervalRow = $('summary-interval-row');
+const levelMeterEl      = $('level-meter');
+const levelMeterBar     = $('level-meter-bar');
+const notesContentEl    = $('notes-content');
+const notesStateEl      = $('notes-state');
+const summaryCountdownEl = $('summary-countdown');
+const contentSplitEl    = $('content-split');
+const transcriptWrapEl  = $('transcript-wrap');
+const notesWrapEl       = $('notes-wrap');
+const subtitleWrapEl    = $('subtitle-wrap');
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
@@ -114,9 +133,32 @@ async function init() {
     }
   });
 
+  // Live transcription toggle shows/hides the transcript panel
+  liveTxCb.addEventListener('change', () => updatePanelVisibility());
+
+  // Live summary toggle shows/hides the notes panel and enables the interval row
+  liveSummaryCb.addEventListener('change', () => {
+    const on = liveSummaryCb.checked;
+    summaryIntervalRow.style.opacity       = on ? '1'    : '0.4';
+    summaryIntervalRow.style.pointerEvents = on ? 'auto' : 'none';
+    updatePanelVisibility();
+    if (on && isRecording) scheduleRollingSummary();
+    else clearTimeout(summaryTimer);
+  });
+  summaryIntervalEl.addEventListener('change', () => {
+    if (isRecording && liveSummaryCb.checked) scheduleRollingSummary();
+  });
+
+  // Apply initial visibility (both off by default)
+  updatePanelVisibility();
+
   // EQ flyout
   eqBtn.addEventListener('click', () => toggleEqPanel());
   eqClose.addEventListener('click', () => toggleEqPanel(false));
+
+  // Settings flyout
+  settingsBtn.addEventListener('click', () => toggleSettingsPanel());
+  settingsClose.addEventListener('click', () => toggleSettingsPanel(false));
   ['eq-sensitivity', 'eq-reactivity', 'eq-minspeech', 'eq-silence'].forEach((id) => {
     const el = $(id);
     el.addEventListener('input', () => onEqChange(id, el));
@@ -127,6 +169,18 @@ async function init() {
     const f = e.target.files?.[0];
     if (f) handleFile(f);
     fileInput.value = '';
+  });
+
+  // Close flyout panels on click-outside
+  document.addEventListener('click', (e) => {
+    if (eqPanel.classList.contains('open') &&
+        !eqPanel.contains(e.target) && e.target !== eqBtn && !eqBtn.contains(e.target)) {
+      toggleEqPanel(false);
+    }
+    if (settingsPanel.classList.contains('open') &&
+        !settingsPanel.contains(e.target) && e.target !== settingsBtn && !settingsBtn.contains(e.target)) {
+      toggleSettingsPanel(false);
+    }
   });
 
   document.addEventListener('dragenter', () => dropOverlay?.classList.add('visible'));
@@ -244,7 +298,10 @@ async function startRecording() {
   workletNode.port.onmessage = (e) => {
     if (e.data.type === 'frame') {
       mainRecBuffer.push(e.data.data);
-      onAudioFrame(e.data.data, mainVAD);
+      currentRmsLevel = rms(e.data.data);  // feed the level meter
+      if (liveTxCb?.checked) onAudioFrame(e.data.data, mainVAD);
+      // Enable Generate Notes after 10 s of buffered audio even without live tx
+      if (mainRecBuffer.length === 1000 && !currentTranscript) notesBtn.disabled = false;
     }
   };
 
@@ -275,7 +332,7 @@ async function startRecording() {
       micWorklet.port.onmessage = (e) => {
         if (e.data.type === 'frame') {
           myRecBuffer.push(e.data.data);
-          onAudioFrame(e.data.data, myVAD);
+          if (liveTxCb?.checked) onAudioFrame(e.data.data, myVAD);
         }
       };
       micSource.connect(micWorklet);
@@ -292,12 +349,15 @@ async function startRecording() {
   goBtn.textContent = 'Pause';
   goBtn.classList.add('recording');
   setStatus('Listening… (hit Pause to stop, Generate Notes when done)', 'recording');
-  scheduleRefinement();
+  startLevelMeter();
+  scheduleRollingSummary();
 }
 
 async function stopRecording() {
   if (!isRecording) return;
-  clearTimeout(refinementTimer);
+  clearTimeout(summaryTimer);
+  stopLevelMeter();
+  stopCountdown();
   setStatus('Finishing…', 'loading');
 
   workletNode?.disconnect();
@@ -323,7 +383,8 @@ async function stopRecording() {
   goBtn.classList.remove('recording');
   subtitleEl.textContent = '';
 
-  if (currentTranscript.trim()) {
+  const hasContent = currentTranscript.trim() || mainRecBuffer.length >= 1000;
+  if (hasContent) {
     notesBtn.disabled = false;
     setStatus('Paused — hit Go to resume or Generate Notes when ready', 'ready');
   } else {
@@ -470,49 +531,130 @@ async function handleFile(file) {
   await finishSession(currentTranscript, sessionTimestamp);
 }
 
-// ── Rolling background refinement ────────────────────────────────────────────
+// ── Level meter ───────────────────────────────────────────────────────────────
 
-function scheduleRefinement() {
-  clearTimeout(refinementTimer);
-  refinementTimer = setTimeout(runRollingRefinement, REFINE_INTERVAL_MS);
+function startLevelMeter() {
+  levelMeterEl?.classList.add('active');
+  if (levelRafId) return;
+  function tick() {
+    if (levelMeterBar) {
+      const pct = Math.min(100, (currentRmsLevel / 0.05) * 100);
+      levelMeterBar.style.width = `${pct.toFixed(1)}%`;
+    }
+    levelRafId = requestAnimationFrame(tick);
+  }
+  levelRafId = requestAnimationFrame(tick);
 }
 
-async function runRollingRefinement() {
-  if (!isRecording || mainRecBuffer.length < MIN_FRAMES_TO_REFINE || isRefining) {
-    scheduleRefinement();
+function stopLevelMeter() {
+  levelMeterEl?.classList.remove('active');
+  if (levelRafId) { cancelAnimationFrame(levelRafId); levelRafId = null; }
+  if (levelMeterBar) levelMeterBar.style.width = '0%';
+  currentRmsLevel = 0;
+}
+
+// ── Summary countdown ─────────────────────────────────────────────────────────
+
+function startCountdown(targetMs) {
+  summaryTargetTime = targetMs;
+  stopCountdown();
+  countdownInterval = setInterval(() => {
+    const remaining = Math.max(0, summaryTargetTime - Date.now());
+    if (!summaryCountdownEl) return;
+    if (remaining === 0 || isSummarizing) {
+      summaryCountdownEl.textContent = '';
+      return;
+    }
+    const mins = Math.floor(remaining / 60_000);
+    const secs = Math.floor((remaining % 60_000) / 1000);
+    summaryCountdownEl.textContent = mins > 0
+      ? `${mins}m ${String(secs).padStart(2, '0')}s`
+      : `${secs}s`;
+  }, 1000);
+}
+
+function stopCountdown() {
+  clearInterval(countdownInterval);
+  countdownInterval = null;
+  if (summaryCountdownEl) summaryCountdownEl.textContent = '';
+}
+
+// ── Rolling live summary ──────────────────────────────────────────────────────
+
+function scheduleRollingSummary() {
+  clearTimeout(summaryTimer);
+  if (!liveSummaryCb?.checked || !isRecording) {
+    stopCountdown();
+    return;
+  }
+  const mins = Math.max(1, parseInt(summaryIntervalEl?.value ?? '10', 10));
+  const delayMs = mins * 60_000;
+  summaryTimer = setTimeout(runRollingSummary, delayMs);
+  startCountdown(Date.now() + delayMs);
+}
+
+async function runRollingSummary() {
+  if (!isRecording || isSummarizing || !liveSummaryCb?.checked) {
+    scheduleRollingSummary();
     return;
   }
 
-  isRefining = true;
-  liveAfterSnapshot = '';
+  const newFrames = mainRecBuffer.slice(lastSummarizedFrameIdx);
+  const MIN_FRAMES = 100 * 10;  // need at least 10 s of new audio
+  if (newFrames.length < MIN_FRAMES) {
+    scheduleRollingSummary();
+    return;
+  }
 
-  const snapshotPcm = concatFrames([...mainRecBuffer]);
+  isSummarizing = true;
+  lastSummarizedFrameIdx = mainRecBuffer.length;
+  stopCountdown();
+  setNotesState('Transcribing…');
 
-  let refinedText = '';
+  let deltaText = '';
   try {
-    const result = await engine.transcribeFileTimestamped(snapshotPcm);
-    refinedText = (result.chunks ?? [])
+    const deltaPcm = concatFrames(newFrames);
+    const result = await engine.transcribeFileTimestamped(deltaPcm);
+    deltaText = (result.chunks ?? [])
       .filter((c) => c.text?.trim())
       .map((c) => c.text.trim())
       .join(' ');
   } catch (err) {
-    console.warn('[Rolling refinement] Failed:', err.message);
-    isRefining = false;
-    scheduleRefinement();
+    console.warn('[Summary] Delta transcription failed:', err.message);
+    isSummarizing = false;
+    setNotesState('');
+    scheduleRollingSummary();
     return;
   }
 
-  if (refinedText) {
-    const combined = liveAfterSnapshot
-      ? refinedText + ' ' + liveAfterSnapshot
-      : refinedText;
-    currentTranscript = combined;
-    updateTranscriptPanel(combined);
-    autoSaveTranscript(combined, sessionTimestamp);
+  if (!deltaText.trim()) {
+    isSummarizing = false;
+    setNotesState('');
+    scheduleRollingSummary();
+    return;
   }
 
-  isRefining = false;
-  scheduleRefinement();
+  setNotesState('Summarising…');
+  let accumulated = '';
+  notesContentEl.textContent = '';
+
+  window.api.onSummaryChunk((text) => {
+    accumulated += text;
+    notesContentEl.textContent = accumulated;
+    notesContentEl.scrollTop = notesContentEl.scrollHeight;
+  });
+
+  try {
+    await window.api.generateSummary({ prevSummary, deltaText });
+    prevSummary = accumulated;
+  } catch (err) {
+    console.warn('[Summary] Generation failed:', err.message);
+  } finally {
+    window.api.offSummaryChunk();
+    isSummarizing = false;
+    setNotesState('');
+    scheduleRollingSummary();
+  }
 }
 
 // ── Hybrid re-transcription ───────────────────────────────────────────────────
@@ -658,6 +800,7 @@ async function enhanceTranscript() {
 }
 
 // ── Shared finish pipeline ────────────────────────────────────────────────────
+// Used by both the Generate Notes button and the file-drop handler.
 
 async function finishSession(text, ts) {
   if (!text.trim()) {
@@ -665,49 +808,84 @@ async function finishSession(text, ts) {
     return;
   }
 
-  const transcriptPath = `recordings/transcript-${ts}.txt`;
-  const notesPath      = `recordings/meeting-notes-${ts}.md`;
+  // Make both panels visible for the streaming output
+  updatePanelVisibility({ showTranscript: true, showNotes: true });
+
+  const transcriptPath = `recordings/${ts}/transcript.txt`;
+  const notesPath      = `recordings/${ts}/meeting-notes.md`;
 
   await window.api.saveTranscript({ text, filePath: transcriptPath });
 
   setStatus('Generating notes…', 'loading');
   notesStatus.textContent = 'Generating meeting notes…';
+  notesContentEl.textContent = '';
+  setNotesState('Generating…');
+
+  // Stream notes chunks into the panel as the model writes them
+  window.api.onNotesChunk((chunk) => {
+    notesContentEl.textContent += chunk;
+    notesContentEl.scrollTop = notesContentEl.scrollHeight;
+  });
 
   const res = await window.api.generateNotes({ transcriptText: text, notesPath });
+  window.api.offNotesChunk();
+  setNotesState('');
 
   if (res.ok) {
     setStatus('Done — notes saved!', 'ready');
-    notesStatus.textContent = `✓ Notes saved to recordings/meeting-notes-${ts}.md`;
+    notesStatus.innerHTML = '';
+    const msg = document.createTextNode(`✓ Saved to recordings/${ts}/`);
+    const openBtn = document.createElement('button');
+    openBtn.className = 'btn-link';
+    openBtn.textContent = 'Open in Finder →';
+    openBtn.addEventListener('click', () => window.api.openRecordingsFolder());
+    notesStatus.appendChild(msg);
+    notesStatus.appendChild(openBtn);
   } else {
     setStatus(`Notes failed: ${res.error}`, 'error');
     notesStatus.textContent = `⚠ Notes failed: ${res.error}`;
+    if (!notesContentEl.textContent.trim()) {
+      notesContentEl.textContent = `Error generating notes: ${res.error}`;
+    }
   }
+
+  // Restore panel visibility based on toggle state now that streaming is done.
+  // Keep panels open if they have content (user may want to read them).
+  const keepTx    = liveTxCb?.checked    || transcriptEl.textContent.trim().length > 0;
+  const keepNotes = liveSummaryCb?.checked || notesContentEl.textContent.trim().length > 0;
+  updatePanelVisibility({ showTranscript: keepTx, showNotes: keepNotes });
 }
 
-// ── Notes button handler ──────────────────────────────────────────────────────
+// ── Notes button handler (Layer 3 pipeline) ───────────────────────────────────
 
 async function generateNotesHandler() {
-  if (!currentTranscript.trim() || !sessionTimestamp) return;
+  const hasAudio = mainRecBuffer.length > 0;
+  if (!hasAudio && !currentTranscript.trim()) return;
+  if (!sessionTimestamp) return;
+
   notesBtn.disabled = true;
   notesBtn.classList.add('running');
   notesBtn.textContent = 'Processing…';
 
-  // Save WAV recording if we have captured audio (live session, not file-drop mode)
-  if (mainRecBuffer.length > 0) {
+  // Reveal both panels so the user can watch re-transcription + notes stream in
+  updatePanelVisibility({ showTranscript: true, showNotes: true });
+
+  // Save WAV from recorded audio (live session only — not file-drop mode)
+  if (hasAudio) {
     try {
-      const mainPcm = concatFrames(mainRecBuffer);
-      const hasMic  = myRecBuffer.length > 0;
-      const mixed   = hasMic ? mixBuffers(mainPcm, concatFrames(myRecBuffer)) : mainPcm;
+      const mainPcm  = concatFrames(mainRecBuffer);
+      const hasMic   = myRecBuffer.length > 0;
+      const mixed    = hasMic ? mixBuffers(mainPcm, concatFrames(myRecBuffer)) : mainPcm;
       const wavBytes = encodeWav(mixed, 16000);
       await window.api.saveAudio({
         bytes:    Array.from(wavBytes),
-        filePath: `recordings/recording-${sessionTimestamp}.wav`,
+        filePath: `recordings/${sessionTimestamp}/recording.wav`,
       });
     } catch (err) {
       console.warn('[WAV] Failed to save recording:', err.message);
     }
 
-    // Re-transcribe at high quality — replaces currentTranscript if successful
+    // High-quality full-session re-transcription — streams into transcript panel
     await enhanceTranscript();
   }
 
@@ -722,17 +900,23 @@ async function generateNotesHandler() {
 
 function newSession() {
   if (isRecording) return;
-  clearTimeout(refinementTimer);
-  isRefining        = false;
-  liveAfterSnapshot = '';
+  clearTimeout(summaryTimer);
+  stopCountdown();
+  isSummarizing          = false;
+  summaryTargetTime      = 0;
+  lastSummarizedFrameIdx = 0;
+  prevSummary            = '';
   sessionTimestamp      = null;
   currentTranscript     = '';
   transcriptEl.textContent  = '';
-  notesStatus.textContent   = '';
+  notesStatus.innerHTML     = '';
   subtitleEl.textContent    = '';
   notesBtn.disabled         = true;
   mainRecBuffer = [];
   myRecBuffer   = [];
+  if (notesContentEl) notesContentEl.textContent = '';
+  setNotesState('');
+  updatePanelVisibility();
   setStatus('Ready — pick devices and hit Go', 'ready');
 }
 
@@ -780,7 +964,6 @@ async function typeInSegment(text, speakerLabel = null) {
   // Commit — plain text for the saved transcript file, rich HTML for the panel
   const plainSegment = labelPlain + text.trim();
   currentTranscript = base + (base ? ' ' : '') + plainSegment;
-  if (isRefining) liveAfterSnapshot += (liveAfterSnapshot ? ' ' : '') + plainSegment;
   updateSubtitles(text.trim());
   updateTranscriptPanel(currentTranscript);
   autoSaveTranscript(currentTranscript, sessionTimestamp);
@@ -793,7 +976,7 @@ let _autoSaveTimer = null;
 function autoSaveTranscript(text, ts) {
   clearTimeout(_autoSaveTimer);
   _autoSaveTimer = setTimeout(() => {
-    window.api.saveTranscript({ text, filePath: `recordings/transcript-${ts}.txt` });
+    window.api.saveTranscript({ text, filePath: `recordings/${ts}/transcript.txt` });
   }, 2000);
 }
 
@@ -802,6 +985,25 @@ function autoSaveTranscript(text, ts) {
 function setStatus(msg, state) {
   statusEl.textContent = msg;
   statusEl.className   = `status ${state}`;
+}
+
+function setNotesState(msg) {
+  if (notesStateEl) notesStateEl.textContent = msg;
+}
+
+/**
+ * Show or hide the transcript and notes panels based on the current toggle
+ * states.  Pass { showTranscript: true, showNotes: true } to force both
+ * visible (e.g. while Generate Notes is streaming).
+ */
+function updatePanelVisibility({ showTranscript, showNotes } = {}) {
+  const txOn    = showTranscript ?? liveTxCb?.checked    ?? false;
+  const notesOn = showNotes      ?? liveSummaryCb?.checked ?? false;
+
+  if (transcriptWrapEl) transcriptWrapEl.style.display = txOn    ? '' : 'none';
+  if (notesWrapEl)      notesWrapEl.style.display       = notesOn ? '' : 'none';
+  if (contentSplitEl)   contentSplitEl.style.display    = (txOn || notesOn) ? '' : 'none';
+  if (subtitleWrapEl)   subtitleWrapEl.style.display    = txOn    ? '' : 'none';
 }
 
 function setSubtitleSpeaking() {
@@ -887,6 +1089,14 @@ function toggleEqPanel(forceOpen) {
   const open = forceOpen !== undefined ? forceOpen : !eqPanel.classList.contains('open');
   eqPanel.classList.toggle('open', open);
   eqBtn.classList.toggle('active', open);
+  if (open) toggleSettingsPanel(false);  // close the other panel
+}
+
+function toggleSettingsPanel(forceOpen) {
+  const open = forceOpen !== undefined ? forceOpen : !settingsPanel.classList.contains('open');
+  settingsPanel.classList.toggle('open', open);
+  settingsBtn.classList.toggle('active', open);
+  if (open) toggleEqPanel(false);  // close the other panel
 }
 
 function onEqChange(id, el) {
@@ -912,7 +1122,10 @@ function onEqChange(id, el) {
 }
 
 function timestamp() {
-  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+         `T${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────

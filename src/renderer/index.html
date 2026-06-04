@@ -115,8 +115,8 @@
       transform: scale(1.15);
     }
 
-    /* ── EQ button ───────────────────────────────────────────────────────── */
-    #eq-btn {
+    /* ── Icon buttons (EQ + Settings) ───────────────────────────────────── */
+    .icon-btn {
       flex-shrink: 0;
       width: 34px; height: 34px;
       border-radius: var(--radius-sm);
@@ -130,7 +130,7 @@
       transition: border-color 0.2s, color 0.2s, background 0.2s;
       -webkit-app-region: no-drag;
     }
-    #eq-btn:hover, #eq-btn.active {
+    .icon-btn:hover, .icon-btn.active {
       border-color: var(--accent);
       color: var(--accent-hi);
       background: rgba(108,99,255,0.12);
@@ -169,7 +169,7 @@
       text-transform: uppercase;
       letter-spacing: 0.12em;
     }
-    #eq-close {
+    #eq-close, #settings-close {
       background: none;
       border: none;
       color: var(--text-dim);
@@ -180,7 +180,7 @@
       -webkit-app-region: no-drag;
       transition: color 0.15s;
     }
-    #eq-close:hover { color: var(--text); }
+    #eq-close:hover, #settings-close:hover { color: var(--text); }
 
     .eq-row {
       display: flex;
@@ -345,12 +345,19 @@
       50%       { box-shadow: 0 0 0 14px rgba(245,158,11,0); }
     }
 
-    /* ── Status bar ──────────────────────────────────────────────────────── */
+    /* ── Status row (status bar + action buttons on one line) ───────────── */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .status-row .status { flex: 1; text-align: left; }
+
     .status {
       font-size: 12px;
       padding: 6px 12px;
       border-radius: var(--radius-sm);
-      text-align: center;
       flex-shrink: 0;
       transition: background 0.2s, color 0.2s;
     }
@@ -358,6 +365,16 @@
     .status.loading   { background: rgba(108,99,255,0.15); color: var(--accent-hi); }
     .status.recording { background: rgba(239,68,68,0.12); color: #fca5a5; }
     .status.error     { background: rgba(239,68,68,0.2); color: #fca5a5; }
+
+    /* ── Summary countdown chip ──────────────────────────────────────────── */
+    .summary-countdown {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-faint);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
 
     /* ── Live subtitle ───────────────────────────────────────────────────── */
     .subtitle-wrap {
@@ -514,6 +531,20 @@
       min-height: 18px;
       flex-shrink: 0;
     }
+    .btn-link {
+      background: none;
+      border: none;
+      padding: 0;
+      margin-left: 8px;
+      font-size: 12px;
+      color: var(--accent-hi);
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      -webkit-app-region: no-drag;
+      transition: color 0.15s;
+    }
+    .btn-link:hover { color: white; }
 
     /* ── Full-window drop overlay ────────────────────────────────────────── */
     #drop-overlay {
@@ -535,6 +566,120 @@
       backdrop-filter: blur(4px);
     }
     #drop-overlay.visible { opacity: 1; }
+
+    /* ── Content split (transcript + notes side by side) ────────────────── */
+    .content-split {
+      flex: 1;
+      display: flex;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .content-split .transcript-wrap,
+    .content-split .notes-wrap {
+      flex: 1;
+      min-width: 0;
+    }
+
+    /* ── Notes / summary panel ───────────────────────────────────────────── */
+    .notes-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .notes-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      flex-shrink: 0;
+    }
+
+    .notes-state {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--accent-hi);
+      text-transform: none;
+      letter-spacing: 0;
+      font-style: italic;
+    }
+
+    #notes-content {
+      flex: 1;
+      padding: 14px 18px;
+      overflow-y: auto;
+      font-size: 13px;
+      line-height: 1.75;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+      user-select: text;
+    }
+
+    #notes-content:empty::before {
+      content: 'Summary and notes will appear here…';
+      color: var(--text-faint);
+      font-style: italic;
+    }
+
+    /* ── Audio level meter ───────────────────────────────────────────────── */
+    .level-meter {
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity 0.4s;
+    }
+    .level-meter.active { opacity: 1; }
+    .level-meter-bar {
+      height: 100%;
+      background: var(--go);
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.06s linear;
+    }
+
+    /* ── EQ panel section label ──────────────────────────────────────────── */
+    .eq-section-label {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      flex-shrink: 0;
+    }
+
+    /* ── Number input (summary interval) ─────────────────────────────────── */
+    input[type=number] {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 13px;
+      padding: 3px 6px;
+      width: 48px;
+      text-align: center;
+      outline: none;
+      -webkit-app-region: no-drag;
+      -moz-appearance: textfield;
+    }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+    input[type=number]:hover,
+    input[type=number]:focus { border-color: var(--accent); }
 
     /* ── Scrollbar ───────────────────────────────────────────────────────── */
     ::-webkit-scrollbar { width: 6px; }
@@ -578,24 +723,42 @@
 
     <button id="go-btn" class="loading" disabled>…</button>
 
-    <!-- Status -->
-    <div id="status" class="status loading">Initialising…</div>
+    <!-- Status bar + permanent action buttons on one line -->
+    <div class="status-row">
+      <div id="status" class="status loading">Initialising…</div>
+      <button id="clear-btn">New Session</button>
+      <button id="notes-btn" disabled>Generate Notes</button>
+    </div>
+
+    <!-- Level meter — thin RMS bar visible while recording -->
+    <div class="level-meter" id="level-meter">
+      <div class="level-meter-bar" id="level-meter-bar"></div>
+    </div>
 
     <!-- Live subtitles -->
-    <div class="subtitle-wrap">
+    <div class="subtitle-wrap" id="subtitle-wrap">
       <div id="subtitle"></div>
     </div>
 
-    <!-- Transcript -->
-    <div class="transcript-wrap">
-      <div class="transcript-header">
-        <span>Transcript</span>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <button id="clear-btn">New Session</button>
-          <button id="notes-btn" disabled>Generate Notes</button>
+    <!-- Content split: transcript (left) + notes/summary (right) -->
+    <div class="content-split" id="content-split">
+      <div class="transcript-wrap" id="transcript-wrap">
+        <div class="transcript-header">
+          <span>Transcript</span>
         </div>
+        <div id="transcript"></div>
       </div>
-      <div id="transcript"></div>
+
+      <div class="notes-wrap" id="notes-wrap">
+        <div class="notes-header">
+          <span>Summary / Notes</span>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="summary-countdown" id="summary-countdown"></span>
+            <span class="notes-state" id="notes-state"></span>
+          </div>
+        </div>
+        <div id="notes-content"></div>
+      </div>
     </div>
 
     <!-- Bottom row: drop zone + file picker + EQ button -->
@@ -606,7 +769,7 @@
       </div>
       <button id="file-btn">Choose File</button>
       <input type="file" id="file-input" accept="audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg,.webm" />
-      <button id="eq-btn" title="Audio settings">
+      <button id="eq-btn" class="icon-btn" title="Audio settings">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect x="1"  y="4"  width="2" height="8" rx="1" fill="currentColor"/>
           <rect x="1"  y="2"  width="2" height="2" rx="1" fill="currentColor" opacity="0.4"/>
@@ -614,6 +777,11 @@
           <rect x="7"  y="4"  width="2" height="2" rx="1" fill="currentColor" opacity="0.4"/>
           <rect x="13" y="5"  width="2" height="7" rx="1" fill="currentColor"/>
           <rect x="13" y="3"  width="2" height="2" rx="1" fill="currentColor" opacity="0.4"/>
+        </svg>
+      </button>
+      <button id="settings-btn" class="icon-btn" title="Processing settings">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z"/>
         </svg>
       </button>
     </div>
@@ -628,7 +796,7 @@
   <!-- Audio settings flyout panel -->
   <div class="eq-panel" id="eq-panel">
     <div class="eq-panel-header">
-      <h3>Audio Settings</h3>
+      <h3>Audio</h3>
       <button id="eq-close">×</button>
     </div>
 
@@ -669,6 +837,53 @@
       <input type="range" id="eq-silence" min="1" max="10" value="2" step="1" />
       <span class="eq-row-desc">How long a pause before a sentence is sent for transcription. Lower gives faster results; higher groups more speech together.</span>
     </div>
+
+
+  </div>
+
+  <!-- Processing settings flyout panel -->
+  <div class="eq-panel" id="settings-panel">
+    <div class="eq-panel-header">
+      <h3>Processing</h3>
+      <button id="settings-close">×</button>
+    </div>
+
+    <div class="eq-divider"></div>
+
+    <div class="eq-row">
+      <div class="eq-row-header">
+        <span class="eq-row-label">Live Transcription</span>
+        <label class="toggle">
+          <input type="checkbox" id="live-tx-toggle" />
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <span class="eq-row-desc">Show live subtitles while recording. Increases GPU usage and may cause occasional pauses. Off by default — high-quality transcription runs when you Generate Notes.</span>
+    </div>
+
+    <div class="eq-divider"></div>
+
+    <div class="eq-row">
+      <div class="eq-row-header">
+        <span class="eq-row-label">Live Summary</span>
+        <label class="toggle">
+          <input type="checkbox" id="live-summary-toggle" />
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <span class="eq-row-desc">Generate a rolling "so far" summary at a set interval during recording. Uses Cursor AI tokens each tick.</span>
+    </div>
+
+    <div class="eq-row" id="summary-interval-row" style="opacity:0.4;pointer-events:none;">
+      <div class="eq-row-header">
+        <span class="eq-row-label">Summary every</span>
+        <div style="display:flex;align-items:center;gap:6px;-webkit-app-region:no-drag;">
+          <input type="number" id="summary-interval" min="1" max="60" value="10" />
+          <span style="font-size:11px;color:var(--text-dim);">min</span>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <script type="module" src="./renderer.js"></script>

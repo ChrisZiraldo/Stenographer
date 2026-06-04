@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session } from 'electron';
+import { app, BrowserWindow, ipcMain, session, shell } from 'electron';
 
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -6,7 +6,7 @@ import { dirname, join } from 'path';
 import { writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import dotenv from 'dotenv';
-import { buildNotesPrompt } from './notes-prompt.js';
+import { buildNotesPrompt, buildSummaryPrompt } from './notes-prompt.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -24,9 +24,9 @@ let mainWindow = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 900,
+    width: 1100,
     height: 720,
-    minWidth: 700,
+    minWidth: 760,
     minHeight: 550,
     title: 'Stenographer',
     backgroundColor: '#0f0f1a',
@@ -73,6 +73,13 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
+// ── IPC: open recordings folder in Finder ────────────────────────────────────
+ipcMain.handle('open-recordings-folder', async () => {
+  const folder = join(app.getAppPath(), 'recordings');
+  if (!existsSync(folder)) await mkdir(folder, { recursive: true });
+  await shell.openPath(folder);
+});
+
 // ── IPC: save transcript ──────────────────────────────────────────────────────
 ipcMain.handle('save-transcript', async (_event, { text, filePath }) => {
   try {
@@ -97,52 +104,115 @@ ipcMain.handle('save-audio', async (_event, { bytes, filePath }) => {
   }
 });
 
-// ── IPC: generate meeting notes via Cursor SDK ────────────────────────────────
-// Runs @cursor/sdk in a plain Node.js child process to avoid the native ABI
-// mismatch between Electron's bundled Node and better-sqlite3.
+// ── Shared streaming agent helper ─────────────────────────────────────────────
+// Spawns generate-notes.cjs with a prompt, streams JSON-line events back.
+// Both notes generation and rolling summaries use this same helper.
+function spawnStreamingAgent({ prompt, apiKey, projectRoot, onChunk, onDone, onError }) {
+  const scriptPath = join(projectRoot, 'src', 'generate-notes.cjs');
+  const nodeBin = process.env.PATH?.includes('/opt/homebrew') ? 'node' : '/opt/homebrew/bin/node';
+
+  const child = spawn(nodeBin, [scriptPath], {
+    cwd: projectRoot,
+    env: { ...process.env, CURSOR_API_KEY: apiKey },
+  });
+
+  let lineBuf = '';
+  let finished = false;
+
+  const done = () => { if (!finished) { finished = true; onDone(); } };
+  const fail = (err) => { if (!finished) { finished = true; onError(err); } };
+
+  child.stdout.on('data', (d) => {
+    lineBuf += d.toString();
+    const lines = lineBuf.split('\n');
+    lineBuf = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === 'chunk' && msg.text) onChunk(msg.text);
+        else if (msg.type === 'done') done();
+        else if (msg.type === 'error') fail(msg.error);
+      } catch { /* skip malformed lines */ }
+    }
+  });
+
+  child.stdin.write(JSON.stringify({ apiKey, cwd: projectRoot, prompt }));
+  child.stdin.end();
+
+  child.on('error', (err) => fail(`Failed to spawn agent: ${err.message}`));
+  child.on('close', (code) => { if (!finished) fail(`Agent process exited with code ${code}`); });
+}
+
+// ── IPC: generate meeting notes (streaming) ───────────────────────────────────
+// Streams agent text chunks to the renderer via 'notes-chunk' events.
+// Accumulates the full output and saves it to notesPath when done.
 ipcMain.handle('generate-notes', async (_event, { transcriptText, notesPath }) => {
   const apiKey = process.env.CURSOR_API_KEY;
   if (!apiKey || apiKey === 'cursor_...') {
     return { ok: false, error: 'CURSOR_API_KEY not set in .env' };
   }
 
-  const prompt = buildNotesPrompt(transcriptText, notesPath);
+  const prompt = buildNotesPrompt(transcriptText);
   const projectRoot = app.getAppPath();
-  // The generate-notes script lives next to main.js in the source tree.
-  // At runtime the compiled file is at .vite/build/ so we go up to find src/.
-  const scriptPath = join(projectRoot, 'src', 'generate-notes.cjs');
 
   return new Promise((resolve) => {
-    // Use system Node.js. Try common Homebrew path as fallback when PATH is stripped in Electron.
-    const nodeBin =
-      process.env.PATH?.includes('/opt/homebrew')
-        ? 'node'
-        : '/opt/homebrew/bin/node';
+    let settled = false;
+    let fullText = '';
 
-    const child = spawn(nodeBin, [scriptPath], {
-      cwd: projectRoot,
-      env: { ...process.env, CURSOR_API_KEY: apiKey },
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d; });
-    child.stderr.on('data', (d) => { stderr += d; });
-
-    child.stdin.write(JSON.stringify({ transcriptText, notesPath, apiKey, cwd: projectRoot, prompt }));
-    child.stdin.end();
-
-    child.on('close', (code) => {
-      try {
-        const result = JSON.parse(stdout.trim());
-        resolve(result);
-      } catch {
-        resolve({ ok: false, error: stderr || `Child process exited with code ${code}` });
+    const settle = async (result) => {
+      if (settled) return;
+      settled = true;
+      // Save the accumulated markdown to disk
+      if (result.ok && fullText.trim()) {
+        try {
+          const dir = dirname(notesPath);
+          if (!existsSync(dir)) await mkdir(dir, { recursive: true });
+          await writeFile(notesPath, fullText, 'utf8');
+        } catch (err) {
+          console.warn('[notes] Failed to save file:', err.message);
+        }
       }
-    });
+      resolve(result);
+    };
 
-    child.on('error', (err) => {
-      resolve({ ok: false, error: `Failed to spawn notes process: ${err.message}` });
+    spawnStreamingAgent({
+      prompt,
+      apiKey,
+      projectRoot,
+      onChunk: (text) => {
+        fullText += text;
+        mainWindow?.webContents.send('notes-chunk', text);
+      },
+      onDone: () => settle({ ok: true, notesPath }),
+      onError: (error) => settle({ ok: false, error }),
+    });
+  });
+});
+
+// ── IPC: generate rolling summary (streaming) ─────────────────────────────────
+// Streams agent text chunks to the renderer via 'summary-chunk' events.
+// Uses only prevSummary + deltaText to keep token cost bounded.
+ipcMain.handle('generate-summary', async (_event, { prevSummary, deltaText }) => {
+  const apiKey = process.env.CURSOR_API_KEY;
+  if (!apiKey || apiKey === 'cursor_...') {
+    return { ok: false, error: 'CURSOR_API_KEY not set in .env' };
+  }
+
+  const prompt = buildSummaryPrompt(prevSummary, deltaText);
+  const projectRoot = app.getAppPath();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (result) => { if (!settled) { settled = true; resolve(result); } };
+
+    spawnStreamingAgent({
+      prompt,
+      apiKey,
+      projectRoot,
+      onChunk: (text) => mainWindow?.webContents.send('summary-chunk', text),
+      onDone: () => settle({ ok: true }),
+      onError: (error) => settle({ ok: false, error }),
     });
   });
 });
