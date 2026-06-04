@@ -29,13 +29,14 @@ const MAX_SPEECH_FRAMES  = SAMPLE_RATE * 8 / FRAME_SAMPLES;   // hard flush at 8
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const engine = new TranscriptionEngine();
-let isRecording   = false;
-let audioContext  = null;
-let mediaStream   = null;
-let workletNode   = null;
-let monitorAudio  = null;
-let micStream     = null;   // second stream for "capture me" mic (no pass-through)
-let micWorklet    = null;
+let isRecording       = false;
+let audioContext      = null;
+let mediaStream       = null;
+let workletNode       = null;
+let monitorAudio      = null;   // <Audio> element for pass-through playback
+let passthroughStream = null;   // MediaStream feeding monitorAudio (independent of recording)
+let micStream         = null;   // second stream for "capture me" mic (no pass-through)
+let micWorklet        = null;
 let currentTranscript = '';
 let sessionTimestamp  = null;
 
@@ -51,6 +52,17 @@ let myVAD   = createVAD('Me');   // user's microphone
 // run a higher-quality full-context pass after the session ends.
 let mainRecBuffer = [];   // frames from the main stream (BlackHole / input device)
 let myRecBuffer   = [];   // frames from the mic stream (only when "Include my voice" is on)
+
+// ── Rolling background refinement ────────────────────────────────────────────
+// Every ~45 s we quietly re-transcribe all accumulated audio and replace the
+// transcript panel, giving the user a progressively cleaner transcript while
+// they're still in the meeting.
+let isRefining         = false;   // true while a refinement pass is running
+let liveAfterSnapshot  = '';      // live VAD text that arrived during a refinement pass
+let refinementTimer    = null;
+
+const REFINE_INTERVAL_MS  = 45_000;
+const MIN_FRAMES_TO_REFINE = 100 * 20;  // at least 20 s of audio (100 frames/s × 20)
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -91,6 +103,16 @@ async function init() {
   onPassthroughToggle();
   captureMicCb.addEventListener('change', onCaptureMicToggle);
   onCaptureMicToggle();
+
+  // Restart pass-through when the user changes input or output device
+  inputSel.addEventListener('change', () => {
+    if (passthroughCb.checked) startPassthrough();
+  });
+  outputSel.addEventListener('change', () => {
+    if (passthroughCb.checked && monitorAudio?.setSinkId) {
+      monitorAudio.setSinkId(outputSel.value).catch(() => {});
+    }
+  });
 
   // EQ flyout
   eqBtn.addEventListener('click', () => toggleEqPanel());
@@ -213,17 +235,6 @@ async function startRecording() {
     return;
   }
 
-  // Pass-through monitoring
-  if (passthroughCb.checked) {
-    monitorAudio = new Audio();
-    monitorAudio.srcObject = mediaStream;
-    monitorAudio.muted = false;
-    if (outputId && monitorAudio.setSinkId) {
-      try { await monitorAudio.setSinkId(outputId); } catch { /* best-effort */ }
-    }
-    await monitorAudio.play();
-  }
-
   // AudioWorklet pipeline
   audioContext = new AudioContext();
   await audioContext.audioWorklet.addModule(audioProcessorUrl);
@@ -281,10 +292,12 @@ async function startRecording() {
   goBtn.textContent = 'Pause';
   goBtn.classList.add('recording');
   setStatus('Listening… (hit Pause to stop, Generate Notes when done)', 'recording');
+  scheduleRefinement();
 }
 
 async function stopRecording() {
   if (!isRecording) return;
+  clearTimeout(refinementTimer);
   setStatus('Finishing…', 'loading');
 
   workletNode?.disconnect();
@@ -293,11 +306,10 @@ async function stopRecording() {
   micStream?.getTracks().forEach((t) => t.stop());
   micStream  = null;
   micWorklet = null;
-  if (monitorAudio) {
-    monitorAudio.pause();
-    monitorAudio.srcObject = null;
-    monitorAudio = null;
-  }
+
+  // Pass-through is managed independently — leave it running so the user
+  // keeps hearing the meeting audio while transcription is paused.
+
   await audioContext?.close();
 
   // Flush any remaining speech in either VAD
@@ -458,6 +470,51 @@ async function handleFile(file) {
   await finishSession(currentTranscript, sessionTimestamp);
 }
 
+// ── Rolling background refinement ────────────────────────────────────────────
+
+function scheduleRefinement() {
+  clearTimeout(refinementTimer);
+  refinementTimer = setTimeout(runRollingRefinement, REFINE_INTERVAL_MS);
+}
+
+async function runRollingRefinement() {
+  if (!isRecording || mainRecBuffer.length < MIN_FRAMES_TO_REFINE || isRefining) {
+    scheduleRefinement();
+    return;
+  }
+
+  isRefining = true;
+  liveAfterSnapshot = '';
+
+  const snapshotPcm = concatFrames([...mainRecBuffer]);
+
+  let refinedText = '';
+  try {
+    const result = await engine.transcribeFileTimestamped(snapshotPcm);
+    refinedText = (result.chunks ?? [])
+      .filter((c) => c.text?.trim())
+      .map((c) => c.text.trim())
+      .join(' ');
+  } catch (err) {
+    console.warn('[Rolling refinement] Failed:', err.message);
+    isRefining = false;
+    scheduleRefinement();
+    return;
+  }
+
+  if (refinedText) {
+    const combined = liveAfterSnapshot
+      ? refinedText + ' ' + liveAfterSnapshot
+      : refinedText;
+    currentTranscript = combined;
+    updateTranscriptPanel(combined);
+    autoSaveTranscript(combined, sessionTimestamp);
+  }
+
+  isRefining = false;
+  scheduleRefinement();
+}
+
 // ── Hybrid re-transcription ───────────────────────────────────────────────────
 
 // ── WAV encoding helpers ──────────────────────────────────────────────────────
@@ -544,13 +601,20 @@ async function enhanceTranscript() {
   const hasMic  = myRecBuffer.length > 0;
   const myPcm   = hasMic ? concatFrames(myRecBuffer) : null;
 
+  // Clear the panel and stream refined text in chunk-by-chunk as it arrives.
+  currentTranscript = '';
+  updateTranscriptPanel('');
+
   let mainChunks = [];
   let myChunks   = [];
 
-  // Re-transcribe main stream with chunk timestamps
+  // Re-transcribe main stream, appending each chunk to the panel as it arrives.
   try {
     const mainResult = await engine.transcribeFileTimestamped(mainPcm, (chunkText) => {
-      if (chunkText.trim()) setStatus(`Re-processing… ${chunkText.slice(0, 40)}…`, 'loading');
+      if (!chunkText.trim()) return;
+      currentTranscript += (currentTranscript ? ' ' : '') + chunkText.trim();
+      updateTranscriptPanel(currentTranscript);
+      setStatus(`Re-processing… ${chunkText.trim().slice(0, 50)}…`, 'loading');
     });
     mainChunks = (mainResult.chunks ?? []).map((c) => ({ ...c, speaker: null }));
   } catch (err) {
@@ -559,35 +623,36 @@ async function enhanceTranscript() {
     return false;
   }
 
-  // Re-transcribe mic stream if present
+  // Re-transcribe mic stream if present, then do a final chronological merge.
   if (hasMic) {
+    setStatus('Re-processing mic stream…', 'loading');
     try {
       const myResult = await engine.transcribeFileTimestamped(myPcm);
       myChunks = (myResult.chunks ?? []).map((c) => ({ ...c, speaker: 'Me' }));
     } catch (err) {
       console.warn('[Enhance] Mic stream re-transcription failed:', err);
-      // Non-fatal: continue with just main stream
+    }
+
+    if (myChunks.length > 0) {
+      // Merge both streams chronologically and replace the panel with the final result.
+      const allChunks = [...mainChunks, ...myChunks]
+        .filter((c) => c.text?.trim())
+        .sort((a, b) => (a.timestamp?.[0] ?? 0) - (b.timestamp?.[0] ?? 0));
+
+      const enhancedText = allChunks
+        .map((c) => (c.speaker ? `[${c.speaker}] ${c.text.trim()}` : c.text.trim()))
+        .join(' ');
+
+      currentTranscript = enhancedText;
+      updateTranscriptPanel(enhancedText);
     }
   }
 
-  // Merge both streams chronologically by chunk start time
-  const allChunks = [...mainChunks, ...myChunks]
-    .filter((c) => c.text?.trim())
-    .sort((a, b) => (a.timestamp?.[0] ?? 0) - (b.timestamp?.[0] ?? 0));
-
-  if (allChunks.length === 0) {
+  if (!currentTranscript.trim()) {
     setStatus('Re-processing yielded no text — using live transcript.', 'ready');
     return false;
   }
 
-  // Build plain-text transcript with [Me] labels
-  const lines = allChunks.map((c) =>
-    c.speaker ? `[${c.speaker}] ${c.text.trim()}` : c.text.trim()
-  );
-  const enhancedText = lines.join(' ');
-
-  currentTranscript = enhancedText;
-  updateTranscriptPanel(enhancedText);
   setStatus('Re-processing complete — generating notes…', 'loading');
   return true;
 }
@@ -657,6 +722,9 @@ async function generateNotesHandler() {
 
 function newSession() {
   if (isRecording) return;
+  clearTimeout(refinementTimer);
+  isRefining        = false;
+  liveAfterSnapshot = '';
   sessionTimestamp      = null;
   currentTranscript     = '';
   transcriptEl.textContent  = '';
@@ -712,6 +780,7 @@ async function typeInSegment(text, speakerLabel = null) {
   // Commit — plain text for the saved transcript file, rich HTML for the panel
   const plainSegment = labelPlain + text.trim();
   currentTranscript = base + (base ? ' ' : '') + plainSegment;
+  if (isRefining) liveAfterSnapshot += (liveAfterSnapshot ? ' ' : '') + plainSegment;
   updateSubtitles(text.trim());
   updateTranscriptPanel(currentTranscript);
   autoSaveTranscript(currentTranscript, sessionTimestamp);
@@ -751,13 +820,58 @@ function updateTranscriptPanel(text) {
   transcriptEl.scrollTop   = transcriptEl.scrollHeight;
 }
 
+// ── Pass-through (independent of recording) ───────────────────────────────────
+// A dedicated stream so audio flows to speakers as soon as the toggle is on,
+// regardless of whether transcription is running or paused.
+
+async function startPassthrough() {
+  stopPassthrough(); // tear down any existing stream first
+  const inputId  = inputSel.value;
+  const outputId = outputSel.value;
+  try {
+    passthroughStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: inputId ? { exact: inputId } : undefined,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    });
+    monitorAudio = new Audio();
+    monitorAudio.srcObject = passthroughStream;
+    monitorAudio.muted = false;
+    if (outputId && monitorAudio.setSinkId) {
+      try { await monitorAudio.setSinkId(outputId); } catch { /* best-effort */ }
+    }
+    await monitorAudio.play();
+  } catch (err) {
+    console.warn('[Passthrough] Could not start:', err.message);
+    monitorAudio = null;
+    passthroughStream = null;
+  }
+}
+
+function stopPassthrough() {
+  if (monitorAudio) {
+    monitorAudio.pause();
+    monitorAudio.srcObject = null;
+    monitorAudio = null;
+  }
+  if (passthroughStream) {
+    passthroughStream.getTracks().forEach((t) => t.stop());
+    passthroughStream = null;
+  }
+}
+
 function onPassthroughToggle() {
   const on = passthroughCb.checked;
-  if (monitorAudio) monitorAudio.muted = !on;
   outputSel.disabled = !on;
   captureMicCb.disabled = !on;
   captureMicGroup.classList.toggle('disabled', !on);
-  if (!on) {
+  if (on) {
+    startPassthrough();
+  } else {
+    stopPassthrough();
     captureMicCb.checked = false;
     onCaptureMicToggle();
   }
