@@ -756,7 +756,10 @@ async function enhanceTranscript() {
   const hasMic  = myRecBuffer.length > 0;
   const myPcm   = hasMic ? concatFrames(myRecBuffer) : null;
 
-  // Clear the panel and stream refined text in chunk-by-chunk as it arrives.
+  // Preserve the live transcript so we can restore it if re-transcription fails.
+  const previousTranscript = currentTranscript;
+
+  // Clear the panel — refined text streams in chunk-by-chunk.
   currentTranscript = '';
   updateTranscriptPanel('');
 
@@ -772,8 +775,26 @@ async function enhanceTranscript() {
       setStatus(`Re-processing… ${chunkText.trim().slice(0, 50)}…`, 'loading');
     });
     mainChunks = (mainResult.chunks ?? []).map((c) => ({ ...c, speaker: null }));
+
+    // Fallback: some Parakeet builds return empty utterance_text in onChunk but
+    // populate chunks[].text or result.text — use those if onChunk produced nothing.
+    if (!currentTranscript.trim()) {
+      const fallback = mainChunks
+        .filter((c) => c.text?.trim())
+        .map((c) => c.text.trim())
+        .join(' ')
+        || mainResult.text?.trim()
+        || '';
+      if (fallback) {
+        currentTranscript = fallback;
+        updateTranscriptPanel(currentTranscript);
+      }
+    }
   } catch (err) {
     console.error('[Enhance] Main stream re-transcription failed:', err);
+    // Restore previous transcript so notes generation still has something to work with.
+    currentTranscript = previousTranscript;
+    updateTranscriptPanel(currentTranscript);
     setStatus('Re-processing failed — using live transcript.', 'ready');
     return false;
   }
@@ -804,7 +825,10 @@ async function enhanceTranscript() {
   }
 
   if (!currentTranscript.trim()) {
-    setStatus('Re-processing yielded no text — using live transcript.', 'ready');
+    // Everything failed — restore what we had before so Generate Notes still works.
+    currentTranscript = previousTranscript;
+    updateTranscriptPanel(currentTranscript);
+    setStatus('Re-processing yielded no text — using prior transcript.', 'ready');
     return false;
   }
 
