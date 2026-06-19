@@ -3,7 +3,7 @@ import { app, BrowserWindow, ipcMain, session, shell } from 'electron';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir, rm } from 'fs/promises';
 import { existsSync, readdirSync, readFileSync, watch as fsWatch } from 'fs';
 import { tmpdir } from 'os';
 import dotenv from 'dotenv';
@@ -364,7 +364,19 @@ ipcMain.handle('db:updateMeeting',(_e, { id, fields }) => {
   repo.updateMeeting(id, fields);
   return { ok: true };
 });
-ipcMain.handle('db:deleteMeeting',(_e, id)   => { repo.deleteMeeting(id); return { ok: true }; });
+ipcMain.handle('db:deleteMeeting', async (_e, id) => {
+  // Fetch paths before deleting the DB row
+  const meeting = repo.getMeeting(id);
+  repo.deleteMeeting(id);
+  // Delete the recordings folder from disk so the legacy migration doesn't re-import it
+  if (meeting?.folder_path) {
+    const folderAbs = meeting.folder_path.startsWith('/')
+      ? meeting.folder_path
+      : join(app.getAppPath(), meeting.folder_path);
+    try { await rm(folderAbs, { recursive: true, force: true }); } catch { /* already gone */ }
+  }
+  return { ok: true };
+});
 ipcMain.handle('db:saveNoteDoc',  (_e, { meetingId, humanDocJson, humanDocText }) => {
   repo.saveNoteDoc(meetingId, { humanDocJson, humanDocText });
   return { ok: true };
@@ -373,6 +385,8 @@ ipcMain.handle('db:saveSummary',  (_e, { meetingId, summaryMd }) => { repo.saveS
 ipcMain.handle('db:saveEnhanced', (_e, { meetingId, enhancedMd }) => { repo.saveEnhancedNotes(meetingId, enhancedMd); return { ok: true }; });
 ipcMain.handle('db:upsertSegments',(_e, { meetingId, segments }) => { repo.upsertSegments(meetingId, segments); return { ok: true }; });
 ipcMain.handle('db:getSegments',  (_e, meetingId) => repo.getSegments(meetingId));
+ipcMain.handle('db:getSpaces',   () => repo.getSpaces());
+ipcMain.handle('db:saveSpaces',  (_e, spaces) => { repo.saveSpaces(spaces); return { ok: true }; });
 ipcMain.handle('db:listTodos',    (_e, opts) => repo.listTodos(opts));
 ipcMain.handle('db:upsertTodo',   (_e, todo) => ({ id: repo.upsertTodo(todo) }));
 ipcMain.handle('db:toggleTodo',   (_e, id)   => { repo.toggleTodo(id); return { ok: true }; });

@@ -328,3 +328,39 @@ export function importLegacyRecordings(recordingsDir, { existsSync, readdirSync,
     return 0;
   }
 }
+
+// ── Custom Spaces ─────────────────────────────────────────────────────────────
+
+/**
+ * Returns all custom spaces ordered by sort_order.
+ * Format: [{ name, icon, color, bg, sort_order }]
+ */
+export function getSpaces() {
+  const db = getDb();
+  return db.prepare('SELECT name, icon, color, bg, sort_order FROM spaces ORDER BY sort_order ASC').all();
+}
+
+/**
+ * Replaces the entire spaces list in one transaction.
+ * spaces: [{ name, icon, color, bg }], order is inferred from array index.
+ */
+export function saveSpaces(spaces) {
+  const db = getDb();
+  const upsert = db.prepare(`
+    INSERT INTO spaces (name, icon, color, bg, sort_order)
+    VALUES (@name, @icon, @color, @bg, @sort_order)
+    ON CONFLICT(name) DO UPDATE SET
+      icon       = excluded.icon,
+      color      = excluded.color,
+      bg         = excluded.bg,
+      sort_order = excluded.sort_order
+  `);
+  const deleteGone = db.prepare('DELETE FROM spaces WHERE name NOT IN (SELECT value FROM json_each(?))');
+
+  const tx = db.transaction((list) => {
+    const names = JSON.stringify(list.map((s) => s.name));
+    deleteGone.run(names);
+    list.forEach((s, i) => upsert.run({ name: s.name, icon: s.icon, color: s.color, bg: s.bg, sort_order: i }));
+  });
+  tx(spaces);
+}

@@ -52,6 +52,8 @@ contextBridge.exposeInMainWorld('api', {
     saveEnhanced:   (meetingId, md)    => ipcRenderer.invoke('db:saveEnhanced', { meetingId, enhancedMd: md }),
     upsertSegments: (meetingId, segs)  => ipcRenderer.invoke('db:upsertSegments', { meetingId, segments: segs }),
     getSegments:    (meetingId)        => ipcRenderer.invoke('db:getSegments', meetingId),
+    getSpaces:      ()                 => ipcRenderer.invoke('db:getSpaces'),
+    saveSpaces:     (spaces)           => ipcRenderer.invoke('db:saveSpaces', spaces),
     listTodos:      (opts)             => ipcRenderer.invoke('db:listTodos', opts),
     upsertTodo:     (todo)             => ipcRenderer.invoke('db:upsertTodo', todo),
     toggleTodo:     (id)               => ipcRenderer.invoke('db:toggleTodo', id),

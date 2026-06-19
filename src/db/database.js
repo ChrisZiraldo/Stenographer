@@ -108,6 +108,21 @@ function runMigrations(db) {
       INSERT OR REPLACE INTO schema_version(version) VALUES (1);
     `);
   }
+
+  if (currentVersion < 2) {
+    db.exec(`
+      -- ── Custom Spaces ──────────────────────────────────────────────────────
+      CREATE TABLE IF NOT EXISTS spaces (
+        name       TEXT PRIMARY KEY,
+        icon       TEXT NOT NULL DEFAULT 'Star',
+        color      TEXT NOT NULL DEFAULT '#5c6e00',
+        bg         TEXT NOT NULL DEFAULT '#eef1d6',
+        sort_order INTEGER NOT NULL DEFAULT 0
+      );
+
+      INSERT OR REPLACE INTO schema_version(version) VALUES (2);
+    `);
+  }
 }
 
 export function closeDb() {

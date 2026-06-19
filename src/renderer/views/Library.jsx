@@ -341,6 +341,7 @@ function Sidebar({ meetings, activeTag, setActiveTag, searchQuery, setSearchQuer
   const [dropTarget,   setDropTarget]   = useState(null);
   const [reorderOver,  setReorderOver]  = useState(null);
   const [showCreator,  setShowCreator]  = useState(false);
+  // customSpaces: start from localStorage for immediate render, then sync with DB
   const [customSpaces, setCustomSpaces] = useState(() => {
     try { return JSON.parse(localStorage.getItem('steno:customSpaces') || '[]'); }
     catch { return []; }
@@ -356,27 +357,60 @@ function Sidebar({ meetings, activeTag, setActiveTag, searchQuery, setSearchQuer
   const spaceOrderRef    = useRef(spaceOrder);
   useEffect(() => { spaceOrderRef.current = spaceOrder; }, [spaceOrder]);
 
-  const saveOrder = (order) => {
-    spaceOrderRef.current = order;
-    setSpaceOrder(order);
+  // On mount, load spaces from DB (authoritative) and merge into state
+  useEffect(() => {
+    window.api?.db?.getSpaces?.().then((rows) => {
+      if (!rows?.length) return;
+      const loaded = rows.map((r) => ({ name: r.name, icon: r.icon, color: r.color, bg: r.bg }));
+      const order  = rows.map((r) => r.name);
+      setCustomSpaces(loaded);
+      localStorage.setItem('steno:customSpaces', JSON.stringify(loaded));
+      // Merge DB order with built-in TAGS order
+      const fullOrder = [
+        ...spaceOrderRef.current.filter((n) => !order.includes(n)), // built-ins first
+        ...order,                                                     // then custom in DB order
+      ];
+      setSpaceOrder(fullOrder);
+      spaceOrderRef.current = fullOrder;
+      localStorage.setItem('steno:spaceOrder', JSON.stringify(fullOrder));
+    }).catch(() => {});
+  }, []);
+
+  // Persist custom spaces to DB + localStorage whenever they change
+  const persistSpaces = (spaces, order) => {
+    // Derive the ordered list of custom spaces for DB storage
+    const customInOrder = order
+      .filter((n) => spaces.some((s) => s.name === n))
+      .map((n, i) => ({ ...spaces.find((s) => s.name === n), sort_order: i }));
+    window.api?.db?.saveSpaces?.(customInOrder).catch(() => {});
+    localStorage.setItem('steno:customSpaces', JSON.stringify(spaces));
     localStorage.setItem('steno:spaceOrder', JSON.stringify(order));
   };
 
+  const saveOrder = (order) => {
+    spaceOrderRef.current = order;
+    setSpaceOrder(order);
+    persistSpaces(customSpaces, order);
+  };
+
   const handleCreateSpace = (space) => {
-    const updated = [...customSpaces, space];
+    const updated   = [...customSpaces, space];
+    const newOrder  = [...spaceOrderRef.current, space.name];
     setCustomSpaces(updated);
-    localStorage.setItem('steno:customSpaces', JSON.stringify(updated));
-    saveOrder([...spaceOrderRef.current, space.name]);
+    persistSpaces(updated, newOrder);
+    spaceOrderRef.current = newOrder;
+    setSpaceOrder(newOrder);
     setShowCreator(false);
     setActiveTag(space.name);
   };
 
   const handleDeleteSpace = (name) => {
     const updatedSpaces = customSpaces.filter((s) => s.name !== name);
+    const updatedOrder  = spaceOrderRef.current.filter((n) => n !== name);
     setCustomSpaces(updatedSpaces);
-    localStorage.setItem('steno:customSpaces', JSON.stringify(updatedSpaces));
-    const updatedOrder = spaceOrderRef.current.filter((n) => n !== name);
-    saveOrder(updatedOrder);
+    persistSpaces(updatedSpaces, updatedOrder);
+    spaceOrderRef.current = updatedOrder;
+    setSpaceOrder(updatedOrder);
     if (activeTag === name) setActiveTag(null);
   };
 
@@ -790,17 +824,11 @@ export function Library() {
                   <Mic size={26} className="text-[#9c9285] dark:text-[#6b6358]" />
                 </div>
                 <h2 className="text-[16px] font-semibold text-[#1a1814] dark:text-[#e8e4db] mb-2">
-                  {activeTag ? `No "${activeTag}" meetings yet` : 'No meetings yet'}
+                  {activeTag ? `No "${activeTag}" notes yet` : 'No notes yet'}
                 </h2>
-                <p className="text-[13px] text-[#9c9285] dark:text-[#6b6358] mb-6 max-w-[200px] leading-relaxed">
-                  Start a recording to capture notes and transcriptions
+                <p className="text-[13px] text-[#9c9285] dark:text-[#6b6358] max-w-[200px] leading-relaxed">
+                  Create a new note to get started
                 </p>
-                <button
-                  onClick={handleNewMeeting}
-                  className="flex items-center gap-1.5 px-5 py-2.5 bg-[#1a1814] hover:bg-[#2a2620] text-white text-[13px] font-medium rounded-full cursor-pointer transition-all"
-                >
-                  <Mic size={13} /> New recording
-                </button>
               </div>
             ) : (
               <div className="pt-3 space-y-8">
