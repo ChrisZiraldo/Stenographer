@@ -4,9 +4,12 @@ import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { writeFile, mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, watch as fsWatch } from 'fs';
+import { tmpdir } from 'os';
 import dotenv from 'dotenv';
-import { buildNotesPrompt, buildSummaryPrompt } from './notes-prompt.js';
+import { buildNotesPrompt, buildSummaryPrompt, buildMergePrompt, buildAutoTitlePrompt } from './notes-prompt.js';
+import { initDb, closeDb } from './db/database.js';
+import * as repo from './db/repositories.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -24,13 +27,14 @@ let mainWindow = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 720,
-    minWidth: 760,
-    minHeight: 550,
+    width: 1280,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
     title: 'Stenographer',
-    backgroundColor: '#0f0f1a',
+    backgroundColor: '#faf8f2',
     titleBarStyle: 'hiddenInset',
+    vibrancy: 'under-window',
     icon: join(app.getAppPath(), 'assets', 'icon-dock.png'),
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -50,9 +54,35 @@ function createWindow() {
   }
 }
 
-// ── Permissions ───────────────────────────────────────────────────────────────
-// Grant microphone access to the renderer without a system prompt in dev.
+// ── Dev-only mouse-free navigation ────────────────────────────────────────────
+// Write {"view":"workspace","meetingId":"<id>"} (or {"view":"library"})
+// to $TMPDIR/steno-dev-nav.json to switch screens without touching the mouse.
+function startDevNavWatcher() {
+  if (!DEV_SERVER_URL) return; // production guard
+  const navFile = join(tmpdir(), 'steno-dev-nav.json');
+  // Watch the temp dir for changes to the control file
+  try {
+    fsWatch(tmpdir(), { persistent: false }, (_eventType, filename) => {
+      if (filename !== 'steno-dev-nav.json') return;
+      try {
+        const raw = readFileSync(navFile, 'utf8');
+        const payload = JSON.parse(raw);
+        mainWindow?.webContents.send('dev:navigate', payload);
+      } catch { /* malformed or mid-write — ignore */ }
+    });
+  } catch { /* tmpdir not watchable — ignore */ }
+}
+
+// ── App lifecycle ─────────────────────────────────────────────────────────────
+
 app.whenReady().then(() => {
+  // Init DB before creating window
+  initDb();
+
+  // One-time legacy migration from recordings/ flat files
+  const recordingsDir = join(app.getAppPath(), 'recordings');
+  repo.importLegacyRecordings(recordingsDir, { existsSync, readdirSync, readFileSync });
+
   if (app.dock) {
     app.dock.setIcon(join(app.getAppPath(), 'assets', 'icon-dock.png'));
   }
@@ -63,11 +93,15 @@ app.whenReady().then(() => {
     },
   );
   createWindow();
+  startDevNavWatcher();
 });
 
 app.on('window-all-closed', () => {
+  closeDb();
   if (process.platform !== 'darwin') app.quit();
 });
+
+app.on('before-quit', () => closeDb());
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -105,8 +139,6 @@ ipcMain.handle('save-audio', async (_event, { bytes, filePath }) => {
 });
 
 // ── Shared streaming agent helper ─────────────────────────────────────────────
-// Spawns generate-notes.cjs with a prompt, streams JSON-line events back.
-// Both notes generation and rolling summaries use this same helper.
 function spawnStreamingAgent({ prompt, apiKey, projectRoot, onChunk, onDone, onError }) {
   const scriptPath = join(projectRoot, 'src', 'generate-notes.cjs');
   const nodeBin = process.env.PATH?.includes('/opt/homebrew') ? 'node' : '/opt/homebrew/bin/node';
@@ -145,9 +177,7 @@ function spawnStreamingAgent({ prompt, apiKey, projectRoot, onChunk, onDone, onE
 }
 
 // ── IPC: generate meeting notes (streaming) ───────────────────────────────────
-// Streams agent text chunks to the renderer via 'notes-chunk' events.
-// Accumulates the full output and saves it to notesPath when done.
-ipcMain.handle('generate-notes', async (_event, { transcriptText, notesPath }) => {
+ipcMain.handle('generate-notes', async (_event, { transcriptText, notesPath, meetingId }) => {
   const apiKey = process.env.CURSOR_API_KEY;
   if (!apiKey || apiKey === 'cursor_...') {
     return { ok: false, error: 'CURSOR_API_KEY not set in .env' };
@@ -163,14 +193,18 @@ ipcMain.handle('generate-notes', async (_event, { transcriptText, notesPath }) =
     const settle = async (result) => {
       if (settled) return;
       settled = true;
-      // Save the accumulated markdown to disk
       if (result.ok && fullText.trim()) {
         try {
-          const dir = dirname(notesPath);
-          if (!existsSync(dir)) await mkdir(dir, { recursive: true });
-          await writeFile(notesPath, fullText, 'utf8');
+          if (notesPath) {
+            const dir = dirname(notesPath);
+            if (!existsSync(dir)) await mkdir(dir, { recursive: true });
+            await writeFile(notesPath, fullText, 'utf8');
+          }
+          if (meetingId) {
+            repo.saveEnhancedNotes(meetingId, fullText);
+          }
         } catch (err) {
-          console.warn('[notes] Failed to save file:', err.message);
+          console.warn('[notes] Failed to save:', err.message);
         }
       }
       resolve(result);
@@ -190,10 +224,77 @@ ipcMain.handle('generate-notes', async (_event, { transcriptText, notesPath }) =
   });
 });
 
+// ── IPC: generate merge (human notes + transcript) ────────────────────────────
+ipcMain.handle('generate-merge', async (_event, { humanNotesText, transcriptText, meetingId }) => {
+  const apiKey = process.env.CURSOR_API_KEY;
+  if (!apiKey || apiKey === 'cursor_...') {
+    return { ok: false, error: 'CURSOR_API_KEY not set in .env' };
+  }
+
+  const prompt = buildMergePrompt(humanNotesText, transcriptText);
+  const projectRoot = app.getAppPath();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let fullText = '';
+
+    const settle = async (result) => {
+      if (settled) return;
+      settled = true;
+      if (result.ok && fullText.trim() && meetingId) {
+        try { repo.saveEnhancedNotes(meetingId, fullText); } catch { /* best-effort */ }
+      }
+      resolve(result);
+    };
+
+    spawnStreamingAgent({
+      prompt,
+      apiKey,
+      projectRoot,
+      onChunk: (text) => {
+        fullText += text;
+        mainWindow?.webContents.send('merge-chunk', text);
+      },
+      onDone: () => settle({ ok: true }),
+      onError: (error) => settle({ ok: false, error }),
+    });
+  });
+});
+
+// ── IPC: generate auto-title ──────────────────────────────────────────────────
+ipcMain.handle('generate-title', async (_event, { transcriptText, notesText, meetingId }) => {
+  const apiKey = process.env.CURSOR_API_KEY;
+  if (!apiKey || apiKey === 'cursor_...') return { ok: false, error: 'No API key' };
+
+  const prompt = buildAutoTitlePrompt(transcriptText, notesText);
+  const projectRoot = app.getAppPath();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let fullText = '';
+    const settle = async (result) => {
+      if (settled) return;
+      settled = true;
+      if (result.ok && fullText.trim() && meetingId) {
+        const title = fullText.trim().replace(/^["']|["']$/g, '').slice(0, 120);
+        try { repo.updateMeeting(meetingId, { title }); } catch { /* best-effort */ }
+        result.title = title;
+      }
+      resolve(result);
+    };
+    spawnStreamingAgent({
+      prompt,
+      apiKey,
+      projectRoot,
+      onChunk: (text) => { fullText += text; },
+      onDone: () => settle({ ok: true }),
+      onError: (error) => settle({ ok: false, error }),
+    });
+  });
+});
+
 // ── IPC: generate rolling summary (streaming) ─────────────────────────────────
-// Streams agent text chunks to the renderer via 'summary-chunk' events.
-// Uses only prevSummary + deltaText to keep token cost bounded.
-ipcMain.handle('generate-summary', async (_event, { prevSummary, deltaText }) => {
+ipcMain.handle('generate-summary', async (_event, { prevSummary, deltaText, meetingId }) => {
   const apiKey = process.env.CURSOR_API_KEY;
   if (!apiKey || apiKey === 'cursor_...') {
     return { ok: false, error: 'CURSOR_API_KEY not set in .env' };
@@ -204,15 +305,76 @@ ipcMain.handle('generate-summary', async (_event, { prevSummary, deltaText }) =>
 
   return new Promise((resolve) => {
     let settled = false;
+    let fullText = '';
     const settle = (result) => { if (!settled) { settled = true; resolve(result); } };
 
     spawnStreamingAgent({
       prompt,
       apiKey,
       projectRoot,
-      onChunk: (text) => mainWindow?.webContents.send('summary-chunk', text),
-      onDone: () => settle({ ok: true }),
+      onChunk: (text) => {
+        fullText += text;
+        mainWindow?.webContents.send('summary-chunk', text);
+      },
+      onDone: () => {
+        if (meetingId && fullText.trim()) {
+          try { repo.saveSummary(meetingId, fullText); } catch { /* best-effort */ }
+        }
+        settle({ ok: true });
+      },
       onError: (error) => settle({ ok: false, error }),
     });
   });
 });
+
+// ── IPC: AI slash command ─────────────────────────────────────────────────────
+ipcMain.handle('ai-command', async (_event, { prompt }) => {
+  const apiKey = process.env.CURSOR_API_KEY;
+  if (!apiKey || apiKey === 'cursor_...') return { ok: false, error: 'No API key' };
+  const projectRoot = app.getAppPath();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let fullText = '';
+    const settle = (result) => { if (!settled) { settled = true; resolve(result); } };
+    spawnStreamingAgent({
+      prompt,
+      apiKey,
+      projectRoot,
+      onChunk: (text) => {
+        fullText += text;
+        mainWindow?.webContents.send('ai-command-chunk', text);
+      },
+      onDone: () => settle({ ok: true, text: fullText }),
+      onError: (error) => settle({ ok: false, error }),
+    });
+  });
+});
+
+// ── IPC: DB operations ────────────────────────────────────────────────────────
+
+ipcMain.handle('db:listMeetings', (_e, opts) => repo.listMeetings(opts));
+ipcMain.handle('db:getMeeting',   (_e, id)   => repo.getMeeting(id));
+ipcMain.handle('db:createMeeting',(_e, opts) => repo.createMeeting(opts));
+ipcMain.handle('db:updateMeeting',(_e, { id, fields }) => {
+  // Resolve audio_path to absolute if it's a relative path
+  if (fields.audio_path && !fields.audio_path.startsWith('/')) {
+    fields.audio_path = join(app.getAppPath(), fields.audio_path);
+  }
+  repo.updateMeeting(id, fields);
+  return { ok: true };
+});
+ipcMain.handle('db:deleteMeeting',(_e, id)   => { repo.deleteMeeting(id); return { ok: true }; });
+ipcMain.handle('db:saveNoteDoc',  (_e, { meetingId, humanDocJson, humanDocText }) => {
+  repo.saveNoteDoc(meetingId, { humanDocJson, humanDocText });
+  return { ok: true };
+});
+ipcMain.handle('db:saveSummary',  (_e, { meetingId, summaryMd }) => { repo.saveSummary(meetingId, summaryMd); return { ok: true }; });
+ipcMain.handle('db:saveEnhanced', (_e, { meetingId, enhancedMd }) => { repo.saveEnhancedNotes(meetingId, enhancedMd); return { ok: true }; });
+ipcMain.handle('db:upsertSegments',(_e, { meetingId, segments }) => { repo.upsertSegments(meetingId, segments); return { ok: true }; });
+ipcMain.handle('db:getSegments',  (_e, meetingId) => repo.getSegments(meetingId));
+ipcMain.handle('db:listTodos',    (_e, opts) => repo.listTodos(opts));
+ipcMain.handle('db:upsertTodo',   (_e, todo) => ({ id: repo.upsertTodo(todo) }));
+ipcMain.handle('db:toggleTodo',   (_e, id)   => { repo.toggleTodo(id); return { ok: true }; });
+ipcMain.handle('db:deleteTodo',   (_e, id)   => { repo.deleteTodo(id); return { ok: true }; });
+ipcMain.handle('db:search',       (_e, { query, limit }) => repo.searchMeetings(query, { limit }));

@@ -1,19 +1,9 @@
 /**
  * Prompt builders for the Cursor SDK agent calls.
- *
- * Both notes generation and rolling summaries use the same streaming child
- * process (generate-notes.cjs).  The prompts tell the model to output its
- * response as raw text — no file writing, no preamble — so the output can
- * be streamed directly into the UI.
  */
 
 /**
- * Builds the final meeting-notes prompt.
- * The model is instructed to output raw Markdown as its response text so we
- * can stream it into the notes panel and save it ourselves.
- *
- * @param {string} transcriptText
- * @returns {string}
+ * Builds the final meeting-notes prompt (transcript-only path).
  */
 export function buildNotesPrompt(transcriptText) {
   return `You are a precise meeting-notes assistant. Read the transcript below and output structured Markdown meeting notes.
@@ -58,13 +48,81 @@ ${transcriptText}
 }
 
 /**
+ * Builds the AI merge prompt — takes BOTH human notes and transcript,
+ * asks the model to merge them (respecting human structure, filling gaps from transcript,
+ * extracting action items).
+ */
+export function buildMergePrompt(humanNotesText, transcriptText) {
+  return `You are a precise meeting-notes assistant. You have two inputs:
+1. HUMAN NOTES: notes written by a human during the meeting (may be incomplete or rough)
+2. TRANSCRIPT: the full meeting transcript
+
+Your job is to produce polished final meeting notes that:
+- Respect and preserve the human's structure and wording where possible
+- Fill in gaps, decisions, and context from the transcript that the human missed
+- Extract all action items into a structured table
+- Are written in clean, professional Markdown
+
+IMPORTANT: Output ONLY the raw Markdown. Begin with "# Meeting Notes". No preamble or closing remarks.
+
+Rules:
+1. Prefer human notes wording over transcript wording when both cover the same point.
+2. Add context from transcript only if it adds meaningful new information.
+3. Do NOT invent facts.
+4. Action items: owner (if stated), task, due date. Unknown owners → "Unassigned".
+5. Keep the summary to 3–5 sentences.
+6. If a section has nothing to add, write "None noted."
+
+Use EXACTLY this structure:
+
+# Meeting Notes
+
+## Summary
+<3-5 sentence summary>
+
+## Decisions
+- <decision>
+
+## Action Items
+| Owner | Task | Due |
+|-------|------|-----|
+| <name or Unassigned> | <task> | <due or —> |
+
+## Callouts / Risks
+- <callout or risk>
+
+## Open Questions
+- <question>
+
+---
+HUMAN NOTES:
+${humanNotesText || '(No human notes taken)'}
+
+---
+TRANSCRIPT:
+${transcriptText || '(No transcript available)'}
+`;
+}
+
+/**
+ * Builds the auto-title prompt — generates a concise meeting title.
+ */
+export function buildAutoTitlePrompt(transcriptText, notesText) {
+  const context = [
+    notesText ? `NOTES:\n${notesText.slice(0, 600)}` : '',
+    transcriptText ? `TRANSCRIPT EXCERPT:\n${transcriptText.slice(0, 800)}` : '',
+  ].filter(Boolean).join('\n\n');
+
+  return `Based on the meeting content below, generate a concise, descriptive meeting title (5–10 words).
+
+Output ONLY the title text. No quotes, no punctuation at the end, no explanation.
+
+${context}
+`;
+}
+
+/**
  * Builds the rolling "so far" summary prompt.
- * Only the previous summary + new delta are sent, keeping token cost bounded
- * regardless of total meeting length.
- *
- * @param {string} prevSummary  - Last generated summary (empty if first tick)
- * @param {string} newText      - New transcript text since the last tick
- * @returns {string}
  */
 export function buildSummaryPrompt(prevSummary, newText) {
   return `You are a precise meeting-notes assistant tracking a live meeting. Update the running bullet-point summary with the new transcript excerpt.
@@ -77,4 +135,17 @@ ${prevSummary || '(Meeting just started — no summary yet.)'}
 New transcript excerpt:
 ${newText}
 `;
+}
+
+/**
+ * Builds a prompt for an inline AI slash command in the editor.
+ */
+export function buildSlashCommandPrompt(command, selectedText, context) {
+  const prompts = {
+    'clean-up': `Clean up and improve the following meeting notes text. Fix grammar, improve clarity, and make it more professional. Output ONLY the improved text with no preamble:\n\n${selectedText || context}`,
+    'summarize': `Summarize the following text in 2–3 concise bullet points. Output ONLY the bullet points:\n\n${selectedText || context}`,
+    'expand': `Expand the following brief note into a more detailed paragraph. Output ONLY the expanded text:\n\n${selectedText || context}`,
+    'action-items': `Extract all action items from the following text. Format as a markdown table with columns: Owner, Task, Due. Output ONLY the table:\n\n${selectedText || context}`,
+  };
+  return prompts[command] ?? `${command}\n\n${selectedText || context}`;
 }

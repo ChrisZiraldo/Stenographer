@@ -7,7 +7,9 @@
   "scripts": {
     "start": "electron-forge start",
     "package": "electron-forge package",
-    "make": "electron-forge make"
+    "make": "electron-forge make",
+    "rebuild": "HOME=~/.electron-gyp npx node-gyp rebuild --target=36.9.5 --arch=arm64 --dist-url=https://electronjs.org/headers -C node_modules/better-sqlite3",
+    "postinstall": "npm run rebuild || true"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.8.0",
@@ -15,14 +17,29 @@
     "@electron-forge/maker-zip": "^7.8.0",
     "@electron-forge/plugin-auto-unpack-natives": "^7.8.0",
     "@electron-forge/plugin-vite": "^7.8.0",
+    "@electron/rebuild": "^3.7.2",
+    "@tailwindcss/vite": "^4.3.1",
+    "@vitejs/plugin-react": "^4.7.0",
     "electron": "^36.0.0",
+    "tailwindcss": "^4.3.1",
     "vite": "^6.0.0"
   },
   "dependencies": {
     "@cursor/sdk": "latest",
     "@ricky0123/vad-web": "^0.0.30",
+    "@tailwindcss/oxide-darwin-arm64": "^4.3.1",
+    "@tiptap/extension-placeholder": "^3.27.0",
+    "@tiptap/extension-task-item": "^3.27.0",
+    "@tiptap/extension-task-list": "^3.27.0",
+    "@tiptap/react": "^3.27.0",
+    "@tiptap/starter-kit": "^3.27.0",
+    "@tiptap/suggestion": "^3.27.0",
+    "better-sqlite3": "^11.10.0",
+    "date-fns": "^4.4.0",
     "dotenv": "^16.0.0",
+    "lucide-react": "^1.21.0",
     "onnxruntime-web": "^1.21.0",
-    "parakeet.js": "^1.4.0"
+    "parakeet.js": "^1.4.0",
+    "zustand": "^5.0.14"
   }
 }

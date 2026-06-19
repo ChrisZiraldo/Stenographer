@@ -1,54 +1,61 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 // ── Streaming chunk handlers ──────────────────────────────────────────────────
-// Module-level callbacks allow the renderer to register/deregister a handler
-// for each stream type without managing ipcRenderer listeners directly.
-let _notesChunkCb   = null;
-let _summaryChunkCb = null;
+let _notesChunkCb      = null;
+let _summaryChunkCb    = null;
+let _mergeChunkCb      = null;
+let _aiCommandChunkCb  = null;
+let _devNavigateCb     = null;
 
-ipcRenderer.on('notes-chunk',   (_event, text) => { if (_notesChunkCb)   _notesChunkCb(text);   });
-ipcRenderer.on('summary-chunk', (_event, text) => { if (_summaryChunkCb) _summaryChunkCb(text); });
+ipcRenderer.on('notes-chunk',       (_e, text)    => _notesChunkCb?.(text));
+ipcRenderer.on('summary-chunk',     (_e, text)    => _summaryChunkCb?.(text));
+ipcRenderer.on('merge-chunk',       (_e, text)    => _mergeChunkCb?.(text));
+ipcRenderer.on('ai-command-chunk',  (_e, text)    => _aiCommandChunkCb?.(text));
+ipcRenderer.on('dev:navigate',      (_e, payload) => _devNavigateCb?.(payload));
 
 contextBridge.exposeInMainWorld('api', {
-  /**
-   * Save a transcript to disk.
-   * @param {{ text: string, filePath: string }} args
-   */
+  // ── File I/O ───────────────────────────────────────────────────────────────
   saveTranscript: (args) => ipcRenderer.invoke('save-transcript', args),
-
-  /**
-   * Generate and stream meeting notes via the Cursor SDK agent.
-   * Text arrives incrementally via onNotesChunk; the final markdown is saved
-   * to notesPath by main.js when the run completes.
-   * @param {{ transcriptText: string, notesPath: string }} args
-   */
-  generateNotes: (args) => ipcRenderer.invoke('generate-notes', args),
-
-  /**
-   * Generate and stream a rolling "so far" summary via the Cursor SDK agent.
-   * Text arrives incrementally via onSummaryChunk.
-   * @param {{ prevSummary: string, deltaText: string }} args
-   */
-  generateSummary: (args) => ipcRenderer.invoke('generate-summary', args),
-
-  /**
-   * Save raw audio bytes to disk (e.g. a WAV recording).
-   * @param {{ bytes: number[], filePath: string }} args
-   */
-  saveAudio: (args) => ipcRenderer.invoke('save-audio', args),
-
-  // ── Streaming callbacks ───────────────────────────────────────────────────
-
-  /** Register a callback that fires for each streamed notes chunk. */
-  onNotesChunk:   (cb) => { _notesChunkCb = cb; },
-  /** Deregister the notes chunk callback. */
-  offNotesChunk:  ()   => { _notesChunkCb = null; },
-
-  /** Register a callback that fires for each streamed summary chunk. */
-  onSummaryChunk:  (cb) => { _summaryChunkCb = cb; },
-  /** Deregister the summary chunk callback. */
-  offSummaryChunk: ()   => { _summaryChunkCb = null; },
-
-  /** Open the recordings folder in Finder. */
+  saveAudio:      (args) => ipcRenderer.invoke('save-audio', args),
   openRecordingsFolder: () => ipcRenderer.invoke('open-recordings-folder'),
+
+  // ── AI generation ──────────────────────────────────────────────────────────
+  generateNotes:   (args) => ipcRenderer.invoke('generate-notes', args),
+  generateMerge:   (args) => ipcRenderer.invoke('generate-merge', args),
+  generateSummary: (args) => ipcRenderer.invoke('generate-summary', args),
+  generateTitle:   (args) => ipcRenderer.invoke('generate-title', args),
+  aiCommand:       (args) => ipcRenderer.invoke('ai-command', args),
+
+  // ── Streaming callbacks ────────────────────────────────────────────────────
+  onNotesChunk:      (cb) => { _notesChunkCb = cb; },
+  offNotesChunk:     ()   => { _notesChunkCb = null; },
+  onSummaryChunk:    (cb) => { _summaryChunkCb = cb; },
+  offSummaryChunk:   ()   => { _summaryChunkCb = null; },
+  onMergeChunk:      (cb) => { _mergeChunkCb = cb; },
+  offMergeChunk:     ()   => { _mergeChunkCb = null; },
+  onAiCommandChunk:  (cb) => { _aiCommandChunkCb = cb; },
+  offAiCommandChunk: ()   => { _aiCommandChunkCb = null; },
+
+  // ── Dev navigation (dev-only, mouse-free screen switching) ─────────────────
+  onDevNavigate:  (cb) => { _devNavigateCb = cb; },
+  offDevNavigate: ()   => { _devNavigateCb = null; },
+
+  // ── Database (all synchronous ops over IPC) ────────────────────────────────
+  db: {
+    listMeetings:   (opts)             => ipcRenderer.invoke('db:listMeetings', opts),
+    getMeeting:     (id)               => ipcRenderer.invoke('db:getMeeting', id),
+    createMeeting:  (opts)             => ipcRenderer.invoke('db:createMeeting', opts),
+    updateMeeting:  (id, fields)       => ipcRenderer.invoke('db:updateMeeting', { id, fields }),
+    deleteMeeting:  (id)               => ipcRenderer.invoke('db:deleteMeeting', id),
+    saveNoteDoc:    (meetingId, doc)   => ipcRenderer.invoke('db:saveNoteDoc', { meetingId, ...doc }),
+    saveSummary:    (meetingId, md)    => ipcRenderer.invoke('db:saveSummary', { meetingId, summaryMd: md }),
+    saveEnhanced:   (meetingId, md)    => ipcRenderer.invoke('db:saveEnhanced', { meetingId, enhancedMd: md }),
+    upsertSegments: (meetingId, segs)  => ipcRenderer.invoke('db:upsertSegments', { meetingId, segments: segs }),
+    getSegments:    (meetingId)        => ipcRenderer.invoke('db:getSegments', meetingId),
+    listTodos:      (opts)             => ipcRenderer.invoke('db:listTodos', opts),
+    upsertTodo:     (todo)             => ipcRenderer.invoke('db:upsertTodo', todo),
+    toggleTodo:     (id)               => ipcRenderer.invoke('db:toggleTodo', id),
+    deleteTodo:     (id)               => ipcRenderer.invoke('db:deleteTodo', id),
+    search:         (query, opts)      => ipcRenderer.invoke('db:search', { query, ...opts }),
+  },
 });

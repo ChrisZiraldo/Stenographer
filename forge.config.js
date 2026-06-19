@@ -7,7 +7,9 @@ module.exports = {
     name: 'Stenographer',
     icon: 'assets/icon',
   },
-  rebuildConfig: {},
+  rebuildConfig: {
+    extraModules: ['better-sqlite3'],
+  },
   makers: [
     { name: '@electron-forge/maker-zip', platforms: ['darwin'] },
     { name: '@electron-forge/maker-dmg', config: { format: 'ULFO' } },
