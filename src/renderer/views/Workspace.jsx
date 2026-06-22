@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import {
   ArrowLeft, Mic, MicOff, Settings, Sparkles,
-  Loader, CheckSquare, Download, Plus, X as XIcon
+  Loader, Download, Plus, X as XIcon
 } from 'lucide-react';
 import { useAppStore } from '../store/appStore.js';
 import { recorder } from '../engine/recorder.js';
@@ -9,7 +9,6 @@ import { NotesEditor } from '../components/NotesEditor.jsx';
 import { RightPane } from '../components/RightPane.jsx';
 import { AudioBars } from '../components/AudioBars.jsx';
 import { SettingsDrawer } from '../components/SettingsDrawer.jsx';
-import { TodoItem } from '../components/TodoItem.jsx';
 import { Button } from '../components/ui/Button.jsx';
 import {
   Briefcase, User, Users, Calendar, Star, Mic as MicIcon, CheckCircle,
@@ -198,84 +197,6 @@ function Timer({ startedAt, isRunning }) {
   );
 }
 
-// ── Meeting todos panel ───────────────────────────────────────────────────────
-
-function MeetingTodos({ meetingId, todos, onRefresh }) {
-  const [newText, setNewText] = useState('');
-  const inputRef = useRef(null);
-
-  const handleAdd = async () => {
-    if (!newText.trim()) return;
-    await window.api.db.upsertTodo({ meetingId, text: newText.trim(), source: 'human', position: Date.now() });
-    setNewText('');
-    onRefresh();
-    inputRef.current?.focus();
-  };
-
-  const handleToggle = async (id) => { await window.api.db.toggleTodo(id); onRefresh(); };
-  const handleDelete = async (id) => { await window.api.db.deleteTodo(id); onRefresh(); };
-
-  const open = todos.filter((t) => !t.done);
-  const done = todos.filter((t) => t.done);
-
-  return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center gap-2 mb-2.5 flex-shrink-0">
-        <CheckSquare size={13} className="text-[#5c6e00]" />
-        <span className="text-[12px] font-semibold text-[#1a1814] tracking-[-0.01em]" style={{ color: 'var(--ink)' }}>Action Items</span>
-        {open.length > 0 && (
-          <span style={{ fontSize: 10, fontWeight: 600, background: 'var(--bg-surface3)', color: 'var(--ink-muted)', padding: '2px 7px', borderRadius: 99 }}>
-            {open.length}
-          </span>
-        )}
-      </div>
-
-      {/* Add input */}
-      <div className="flex items-center gap-2 mb-2 flex-shrink-0"
-        style={{ background: 'var(--bg-surface2)', border: '1px solid var(--border-soft)', borderRadius: 8, padding: '4px 4px 4px 10px' }}>
-        <input
-          ref={inputRef}
-          type="text"
-          value={newText}
-          onChange={(e) => setNewText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
-          placeholder="Add action item…"
-          style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 13, color: 'var(--ink)' }}
-          className="placeholder:text-[#c4bdb5] dark:placeholder:text-[#5e5850]"
-        />
-        <button
-          onClick={handleAdd}
-          disabled={!newText.trim()}
-          style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 26, height: 26, borderRadius: 6, border: 'none', cursor: newText.trim() ? 'pointer' : 'default',
-            background: newText.trim() ? '#eef1d6' : 'transparent',
-            color: newText.trim() ? '#3d4900' : '#c4bdb5',
-            transition: 'all 0.12s', flexShrink: 0,
-          }}
-        >
-          <Plus size={13} />
-        </button>
-      </div>
-
-      {/* List */}
-      <div className="flex-1 overflow-y-auto min-h-0">
-        {todos.length === 0 && (
-          <p className="text-[12px] text-[#c4bdb5] dark:text-[#7a7268] text-center py-4">No action items yet</p>
-        )}
-        {open.map((t) => <TodoItem key={t.id} todo={t} onToggle={handleToggle} onDelete={handleDelete} />)}
-        {done.length > 0 && (
-          <>
-            <div className="px-2 pt-3 pb-1 text-[10px] font-semibold text-[#c4bdb5] dark:text-[#7a7268] uppercase tracking-[0.08em]">Completed</div>
-            {done.map((t) => <TodoItem key={t.id} todo={t} onToggle={handleToggle} onDelete={handleDelete} />)}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ── Workspace ─────────────────────────────────────────────────────────────────
 
 export function Workspace() {
@@ -294,11 +215,13 @@ export function Workspace() {
   } = useAppStore();
 
   const [meeting, setMeeting]       = useState(null);
-  const [todos, setTodos]           = useState([]);
   const [settingsOpen, setSettings] = useState(false);
   const [startedAt, setStartedAt]   = useState(null);
   const [initialDoc, setInitialDoc] = useState('{}');
   const [exportDone, setExportDone] = useState(false);
+  const [isDictating, setIsDictating]       = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [dictationError, setDictationError] = useState(null);
   const editorInstanceRef           = useRef(null);
   const audioRef                    = useRef(null);
   const enhancedRef                 = useRef('');
@@ -325,13 +248,6 @@ export function Workspace() {
       }
     }
 
-    loadTodos();
-  }, [activeMeetingId]);
-
-  const loadTodos = useCallback(async () => {
-    if (!activeMeetingId) return;
-    const ts = await window.api.db.listTodos({ meetingId: activeMeetingId });
-    setTodos(ts ?? []);
   }, [activeMeetingId]);
 
   useEffect(() => { loadMeeting(); }, [loadMeeting]);
@@ -426,9 +342,6 @@ export function Workspace() {
     try {
       const res = await window.api.generateMerge({ humanNotesText: humanText, transcriptText, meetingId: activeMeetingId });
       if (res.ok) {
-        await extractAndSaveActionItems(enhancedRef.current, activeMeetingId);
-        loadTodos();
-
         if (!meeting?.title || meeting.title === 'New Meeting' || meeting.title === 'Untitled Meeting') {
           const titleRes = await window.api.generateTitle({ transcriptText, notesText: humanText, meetingId: activeMeetingId });
           if (titleRes?.title) setMeeting((m) => m ? { ...m, title: titleRes.title } : m);
@@ -448,7 +361,7 @@ export function Workspace() {
       window.api.offMergeChunk();
       setIsEnhancing(false);
     }
-  }, [activeMeetingId, meeting, loadTodos, loadMeeting]);
+  }, [activeMeetingId, meeting, loadMeeting]);
 
   const handleTitleChange = useCallback(async (title) => {
     setMeeting((m) => m ? { ...m, title } : m);
@@ -505,17 +418,12 @@ export function Workspace() {
         style={{ paddingLeft: 88, paddingRight: 16, paddingTop: 10, paddingBottom: 10 }}>
         <button
           onClick={async () => {
+            const editorText = editorInstanceRef.current?.getText?.() ?? '';
             const isBlank =
               (!meeting?.title || meeting.title === 'New Note') &&
               liveSegments.length === 0 &&
               !meeting?.enhanced_notes &&
-              (() => {
-                try {
-                  const doc = JSON.parse(initialDoc || '{}');
-                  const text = doc?.content?.map?.(n => n?.content?.map?.(c => c?.text ?? '').join('') ?? '').join('') ?? '';
-                  return text.trim() === '';
-                } catch { return true; }
-              })();
+              editorText.trim() === '';
             if (isBlank && activeMeetingId) {
               await window.api.db.deleteMeeting(activeMeetingId);
             }
@@ -648,13 +556,12 @@ export function Workspace() {
           </div>
 
           {/* Notes content */}
-          <div className="flex-1 overflow-y-auto min-h-0 flex flex-col bg-[#faf8f2] dark:bg-[#201d16]">
+          <div className="flex-1 overflow-y-auto min-h-0 flex flex-col bg-[#faf8f2] dark:bg-[#201d16] relative">
             {notesView === 'human' ? (
-              <div className="flex-1 px-3 pt-3 pb-4 min-h-0 flex flex-col">
+              <div className="flex-1 px-3 pt-3 pb-16 min-h-0 flex flex-col">
                 <NotesEditor
                   meetingId={activeMeetingId}
                   initialDoc={initialDoc}
-                  onTodosChange={loadTodos}
                   editorRef={editorInstanceRef}
                   onTemplate={handleTemplate}
                 />
@@ -664,12 +571,72 @@ export function Workspace() {
                 <EnhancedNotesView md={enhancedNotes} isStreaming={isEnhancing} />
               </div>
             )}
+
+            {/* Floating dictation pill — inserts speech directly into the editor */}
+            {notesView === 'human' && (
+              <div className="absolute bottom-4 left-0 right-0 flex flex-col items-center gap-2 pointer-events-none">
+                {dictationError && (
+                  <div className="pointer-events-auto px-3 py-1.5 rounded-lg text-xs font-medium max-w-xs text-center"
+                    style={{ background: 'rgba(180,88,55,0.12)', color: '#b45837', border: '1px solid rgba(180,88,55,0.25)' }}>
+                    {dictationError}
+                  </div>
+                )}
+                <button
+                  disabled={isTranscribing}
+                  onClick={async () => {
+                    setDictationError(null);
+                    if (isDictating) {
+                      setIsDictating(false);
+                      setIsTranscribing(true);
+                      const text = await recorder.stopDictation();
+                      setIsTranscribing(false);
+                      if (text) {
+                        const editor = editorInstanceRef.current;
+                        if (editor) {
+                          editor.commands.focus();
+                          editor.commands.insertContent(text + ' ');
+                        }
+                      } else if (text === null && recorder._dictationFrames === null) {
+                        // transcription returned nothing — likely empty audio
+                        setDictationError('Nothing heard — try speaking closer to the mic');
+                        setTimeout(() => setDictationError(null), 4000);
+                      }
+                      return;
+                    }
+                    setIsDictating(true);
+                    const ok = await recorder.startDictation();
+                    if (!ok) {
+                      setIsDictating(false);
+                      setDictationError('Model not ready — try recording a meeting first to load the AI model');
+                      setTimeout(() => setDictationError(null), 5000);
+                    }
+                  }}
+                  className="pointer-events-auto flex items-center justify-center rounded-full transition-all duration-150 select-none no-drag"
+                  style={{
+                    width: 56, height: 56,
+                    background: isTranscribing
+                      ? 'rgba(255,255,255,0.92)'
+                      : isDictating ? '#5c6e00' : 'rgba(255,255,255,0.92)',
+                    border: `1.5px solid ${isDictating ? '#5c6e00' : 'rgba(200,196,188,0.7)'}`,
+                    boxShadow: isDictating
+                      ? '0 0 0 6px rgba(92,110,0,0.15), 0 4px 16px rgba(26,24,20,0.18)'
+                      : '0 4px 16px rgba(26,24,20,0.14)',
+                    backdropFilter: 'blur(8px)',
+                    color: isDictating ? '#fff' : '#5c5448',
+                    opacity: isTranscribing ? 0.6 : 1,
+                  }}
+                >
+                  {isTranscribing
+                    ? <Loader size={20} className="animate-spin" />
+                    : isDictating
+                      ? <span className="animate-record-pulse" style={{ width: 14, height: 14, borderRadius: 3, background: '#fff', flexShrink: 0 }} />
+                      : <Mic size={22} />
+                  }
+                </button>
+              </div>
+            )}
           </div>
 
-          {/* Action items panel */}
-          <div className="h-52 border-t border-[#ede9df] dark:border-[#46412e] px-4 pt-3 pb-2 flex flex-col flex-shrink-0 bg-[#f8f6f1] dark:bg-[#2a261c]">
-            <MeetingTodos meetingId={activeMeetingId} todos={todos} onRefresh={loadTodos} />
-          </div>
         </div>
 
         {/* Right: Summary / Transcript — visible when either feature is enabled */}
@@ -718,24 +685,6 @@ function EnhancedNotesView({ md, isStreaming }) {
   );
 }
 
-async function extractAndSaveActionItems(md, meetingId) {
-  const tableRegex = /\|[^|]*\|[^|]*\|[^|]*\|/g;
-  const rows = md.match(tableRegex);
-  if (!rows) return;
-  const dataRows = rows.filter((r) => !r.toLowerCase().includes('owner') && !r.includes('---'));
-  for (let i = 0; i < dataRows.length; i++) {
-    const cols = dataRows[i].split('|').map((c) => c.trim()).filter(Boolean);
-    if (cols.length < 2) continue;
-    const [owner, task, due] = cols;
-    if (!task || task === '—') continue;
-    await window.api.db.upsertTodo({
-      meetingId, text: task,
-      owner: owner === 'Unassigned' ? null : owner,
-      due: due && due !== '—' ? due : null,
-      source: 'ai', position: 10000 + i,
-    });
-  }
-}
 
 function markdownToHtml(md) {
   if (!md) return '';

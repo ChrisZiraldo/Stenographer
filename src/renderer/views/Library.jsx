@@ -115,8 +115,6 @@ function cleanTitle(raw) {
 function notePreview(meeting) {
   const text = (meeting.human_doc_text || '').trim();
   if (text.length > 4) return text.slice(0, 72).replace(/\s+/g, ' ');
-  const open = meeting.open_todos ?? 0;
-  if (open > 0) return `${open} open action${open !== 1 ? 's' : ''}`;
   return null;
 }
 
@@ -179,7 +177,13 @@ const COLOR_PRESETS = [
 function MeetingRow({ meeting, onOpen, onDelete, onRemoveTag, isSelected }) {
   const hasAudio = !!meeting.audio_path;
   const title    = cleanTitle(meeting.title);
-  const timeStr  = meeting.created_at ? format(new Date(meeting.created_at), 'HH:mm') : '';
+  const timeStr  = meeting.created_at ? (() => {
+    const d = new Date(meeting.created_at);
+    const time = format(d, 'HH:mm');
+    if (isToday(d)) return time;
+    if (isYesterday(d)) return `Yesterday ${time}`;
+    return `${format(d, 'MMM d')} ${time}`;
+  })() : '';
   const preview  = notePreview(meeting);
 
   const isRecording = meeting.status === 'recording';

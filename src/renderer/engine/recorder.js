@@ -644,6 +644,99 @@ export class Recorder {
     const p = (n) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
   }
+
+  // ── Dictation mode (push-to-talk → editor, bypasses the full recording pipeline) ──
+  // Tap to start: mic opens and all audio is buffered.
+  // Tap to stop: Parakeet transcribes the full buffer and the text is returned.
+
+  get isDictating() { return !!this._dictationStream; }
+
+  async startDictation() {
+    if (this._dictationStream) return true;
+
+    console.log('[Dictation] starting, model loaded:', this.engine.isLoaded);
+    if (!this.engine.isLoaded) {
+      console.warn('[Dictation] Parakeet model not loaded — open a note and wait for the model to initialise first');
+      return false;
+    }
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (err) {
+      console.error('[Dictation] mic error:', err.message);
+      return false;
+    }
+
+    console.log('[Dictation] mic stream open, setting up AudioContext');
+    const ctx    = new AudioContext({ sampleRate: 16000 });
+    await ctx.resume();
+    console.log('[Dictation] AudioContext state:', ctx.state);
+
+    const frames = [];
+
+    await ctx.audioWorklet.addModule(audioProcessorUrl);
+    const source  = ctx.createMediaStreamSource(stream);
+    const worklet = new AudioWorkletNode(ctx, 'audio-downsample-processor');
+
+    let frameCount = 0;
+    worklet.port.onmessage = (e) => {
+      if (e.data.type === 'frame') {
+        frames.push(e.data.data);
+        frameCount++;
+        if (frameCount === 1) console.log('[Dictation] first frame received, data type:', e.data.data?.constructor?.name, 'length:', e.data.data?.length);
+      }
+    };
+
+    worklet.port.onerror = (e) => console.error('[Dictation] worklet port error:', e);
+
+    source.connect(worklet);
+    const sink = ctx.createGain();
+    sink.gain.value = 0;
+    worklet.connect(sink);
+    sink.connect(ctx.destination);
+
+    console.log('[Dictation] audio graph ready, listening…');
+    this._dictationStream  = stream;
+    this._dictationContext = ctx;
+    this._dictationWorklet = worklet;
+    this._dictationFrames  = frames;
+    return true;
+  }
+
+  async stopDictation() {
+    if (!this._dictationStream) return null;
+
+    const frames = this._dictationFrames ?? [];
+    console.log('[Dictation] stopping, frames collected:', frames.length);
+
+    try { this._dictationWorklet?.port.close(); } catch {}
+    try { this._dictationWorklet?.disconnect(); } catch {}
+    try { this._dictationContext?.close(); } catch {}
+    this._dictationStream?.getTracks?.().forEach((t) => t.stop());
+    this._dictationStream  = null;
+    this._dictationContext = null;
+    this._dictationWorklet = null;
+    this._dictationFrames  = null;
+
+    if (!frames.length) {
+      console.warn('[Dictation] no frames captured — audio worklet may not have fired');
+      return null;
+    }
+
+    const audio = this._concatFrames(frames);
+    console.log('[Dictation] transcribing', audio.length, 'samples (', (audio.length / 16000).toFixed(1), 's)');
+    try {
+      const { text } = await this.engine.transcribeSegment(audio);
+      console.log('[Dictation] transcription result:', JSON.stringify(text));
+      return text?.trim() || null;
+    } catch (err) {
+      console.error('[Recorder] Dictation transcription error:', err);
+      return null;
+    }
+  }
 }
 
 // Singleton for the renderer

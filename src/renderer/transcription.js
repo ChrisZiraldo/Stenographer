@@ -32,10 +32,7 @@ export class TranscriptionEngine {
     if (this._model) return;
 
     const hasWebGPU = typeof navigator !== 'undefined' && navigator.gpu != null;
-    const backend = hasWebGPU ? 'webgpu' : 'wasm';
-    if (!hasWebGPU) {
-      console.warn('[Transcription] WebGPU not available, falling back to WASM');
-    }
+    let backend = hasWebGPU ? 'webgpu' : 'wasm';
 
     onProgress?.('Checking model cache…', 0);
 
@@ -50,12 +47,39 @@ export class TranscriptionEngine {
       },
     });
 
-    this._model = await ParakeetModel.fromUrls({
-      ...modelData.urls,
-      filenames: modelData.filenames,
-      backend,
-      preprocessorBackend: modelData.preprocessorBackend ?? 'js',
-    });
+    // Try WebGPU first; if it fails (e.g. GPU out of memory), fall back to WASM
+    try {
+      this._model = await ParakeetModel.fromUrls({
+        ...modelData.urls,
+        filenames: modelData.filenames,
+        backend,
+        preprocessorBackend: modelData.preprocessorBackend ?? 'js',
+      });
+    } catch (gpuErr) {
+      if (backend === 'webgpu') {
+        console.warn('[Transcription] WebGPU failed, retrying with WASM:', gpuErr.message);
+        onProgress?.('GPU unavailable, loading WASM fallback…', 0);
+        backend = 'wasm';
+        const wasmData = await getParakeetModel(MODEL_KEY, {
+          backend: 'wasm',
+          encoderQuant: 'int8',
+          decoderQuant: 'int8',
+          preprocessorBackend: 'js',
+          progress: ({ loaded, total, file }) => {
+            const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+            onProgress?.(`Downloading ${file ?? 'model'}… ${pct}%`, pct, total);
+          },
+        });
+        this._model = await ParakeetModel.fromUrls({
+          ...wasmData.urls,
+          filenames: wasmData.filenames,
+          backend: 'wasm',
+          preprocessorBackend: wasmData.preprocessorBackend ?? 'js',
+        });
+      } else {
+        throw gpuErr;
+      }
+    }
 
     onProgress?.('Model ready', 100);
   }
