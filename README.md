@@ -2,17 +2,51 @@
 
 # Stenographer
 
-Local-first meeting transcription desktop app for macOS. All audio processing and speech recognition runs entirely on-device — nothing leaves your machine. Powered by **Parakeet TDT V3** (on-device ASR via WebGPU) and the **Cursor SDK** (AI notes generation).
+A local-first, notes-first meeting companion for macOS. Write notes while you meet, record and transcribe the conversation, then let AI merge everything into polished meeting notes — all on-device. Nothing leaves your machine.
 
-Uses a **hybrid transcription strategy**: live VAD-driven subtitles during the session for real-time feedback, then a full high-quality re-transcription pass over the recorded audio when you hit Generate Notes — producing a more accurate final transcript and better meeting notes.
+Powered by **Parakeet TDT V3** (on-device speech recognition via WebGPU/WASM) and the **Cursor SDK** (AI notes generation).
 
-| Mode | How |
-|---|---|
-| **Zoom / app audio** | Route Zoom's speaker through BlackHole → select BlackHole as Input Device, enable Pass Through |
-| **In-person meeting** | Select your microphone as Input Device, disable Pass Through |
-| **Recorded file** | Drag a `.wav / .mp3 / .m4a / .flac / .ogg / .webm` onto the app |
+---
 
-After stopping, the app automatically generates structured meeting notes via a local Cursor agent.
+## Features
+
+### Notes library
+- Browsable, searchable history of all notes grouped by date (Today, Yesterday, This week, etc.)
+- **Spaces** — organise notes into custom-labelled buckets (Work, 1:1, Standup, etc.) with custom icons and colours; drag a note onto a space to tag it
+- **Star** any note to pin it to the top of the list
+- Full-text search across titles, note body, and transcripts
+- Blank notes are automatically discarded when you navigate away
+
+### Note editor (My Notes)
+- **TipTap** rich-text editor with a formatting toolbar — bold, italic, underline, headings, lists, blockquotes, dividers, task checkboxes
+- **Slash commands** — type `/` anywhere to insert blocks or trigger AI actions (clean up, summarise, extract action items)
+- **Templates** — quickly pre-fill a note structure (standup, retro, 1:1, etc.)
+- **Dictation** — push-to-talk mic button at the bottom of the editor sends audio through the on-device Parakeet model and inserts the transcribed text at your cursor, completely independent of the meeting recording pipeline
+- Notes auto-save to SQLite as you type
+
+### Recording & transcription
+- **Live VAD-driven subtitles** — energy-based voice-activity detection runs in an AudioWorklet; detected speech chunks are flushed to Parakeet for real-time captions
+- **Hybrid re-transcription** — full audio buffers are saved in memory during recording; when you hit Enhance, a higher-quality full-context pass is run over the whole session, producing a much more accurate final transcript
+- **Dual-stream capture** — optionally capture both the call audio (via BlackHole) and your own microphone simultaneously, with each stream labelled separately (`[Me]`)
+- **Pass-through monitoring** — route BlackHole audio back to your speakers/headphones so you still hear the call while it's being captured
+- **File import** — drag a `.wav / .mp3 / .m4a / .flac / .ogg / .webm` file onto the app to transcribe a recording after the fact
+- **WebGPU → WASM fallback** — if the GPU is out of memory, the model automatically retries with WASM (CPU) so transcription still works
+
+### AI enhancement
+- **Enhance** merges your handwritten notes with the full transcript using the Cursor SDK to produce clean, structured meeting notes
+- **Live summary** (optional) — rolling AI summary updates every N seconds while recording, shown in the right pane alongside the live transcript
+- Right pane is only shown when live transcription or live summary is enabled in settings
+
+### Organisation
+- **Spaces** — built-in (Work, 1:1, Standup, Planning, Interview, Review) plus unlimited custom spaces with an icon + colour picker
+- Drag notes onto a sidebar space to apply a tag, or use the inline space tag strip inside a note
+- Drag spaces to reorder them in the sidebar
+- Right-click a note in a space to remove it from that space
+
+### Appearance & settings
+- **Dark mode** toggle in Settings (warm dark palette, not harsh grey)
+- Compact **Settings dialog** with three panels: Audio, Processing, Voice Detection
+- All VAD parameters adjust live without restarting a recording
 
 ---
 
@@ -57,120 +91,162 @@ The first launch downloads the Parakeet V3 model weights (~350 MB) from Hugging 
 
 ## Usage
 
-### Live meeting
+### Starting a note
 
-1. Open the app and wait for **Go** to become active (model is loading in the background).
-2. Set **Input Device** → the audio source you want to transcribe (BlackHole for Zoom, your mic for in-person).
-3. **Pass Through** — turn ON for Zoom (routes BlackHole audio back to your speakers so you can hear the call), OFF for in-person (prevents feedback).
-   - When Pass Through is ON, select your speakers/headphones from the dropdown next to the toggle.
-4. **Include my voice** — turn ON if you also want your own mic captured and labelled in the transcript. Select your microphone from the dropdown. Only available when Pass Through is ON.
-5. Hit **Go**. Live subtitles appear as people speak.
-6. Hit **Go** again (shows as *Pause*) when done.
-7. Hit **Generate Notes** for the AI-written summary.
+1. Click **+ New note** in the Library to open a blank note.
+2. Give it a title and start typing in the **My Notes** editor.
+3. Use `/` to insert blocks or trigger AI actions inline.
 
-### Recorded file
+### Recording a meeting
 
-Drag any audio file onto the app window (or click **Choose File**). The app decodes, transcribes, then generates notes automatically.
+1. Open a note (new or existing).
+2. Open **Settings** (gear icon in the top bar) and configure your audio devices:
+   - Set **Input** to BlackHole for Zoom, or your microphone for in-person.
+   - Enable **Pass-through** if capturing Zoom audio so you can still hear the call.
+   - Enable **Include my voice** to also capture and label your own microphone.
+3. Hit **Record**. Live captions appear in the right pane (if Live Transcription is on).
+4. Keep taking notes in the left pane while the call is being captured.
+5. Hit **Record** again to stop.
+6. Hit **Enhance** to run the AI merge of your notes + transcript.
+
+### Dictation (personal notes)
+
+Tap the **microphone pill** at the bottom of the My Notes editor to start dictating. Speak naturally, then tap again to stop. The on-device Parakeet model transcribes your speech and inserts it at the cursor. This is independent of the meeting recording — no audio is saved.
+
+### Recording from a file
+
+Drag any supported audio file onto the app window. The app decodes, transcribes, then prompts you to enhance.
 
 **Supported formats:** `.wav` `.mp3` `.m4a/.aac` `.flac` `.ogg` `.webm`
 
-### Audio settings (EQ panel)
+### Starring notes
 
-Click the equaliser icon (bottom-right) to open the audio settings flyout. All parameters update live, even mid-recording:
+Click the **star icon** on hover in the Library list, or the star in the note's top bar. Starred notes sort to the top of the list.
 
-| Slider | What it controls | Range |
-|---|---|---|
-| **Sensitivity** | RMS threshold to trigger speech detection | 1 (loud only) → 10 (very quiet) |
-| **Reactivity** | EMA smoothing coefficient — how fast the detector responds to volume changes | 1 (smooth) → 10 (instant) |
-| **Min Speech** | Minimum duration a sound must be sustained before it's treated as speech | 1 (~30 ms) → 10 (~800 ms) |
-| **Silence Gap** | How long silence must persist before a speech segment is sent for transcription | 1 (~100 ms) → 10 (~1500 ms) |
+### Organising with Spaces
+
+- Click a space in the sidebar to filter the list to notes tagged with that space.
+- Drag any note row onto a space to tag it.
+- Click **+** next to the Spaces heading to create a custom space — choose an icon, colour, and name.
+- Hover a note inside a space to reveal the **tag icon** — click it to remove the note from that space.
+- Drag spaces by their grip handle to reorder them.
+- Long-hover a space name to reveal the delete option.
 
 ---
 
-## Output files
+## Settings reference
 
-```
-recordings/
-  transcript-2026-06-02_10-30-00.txt    ← enhanced transcript (replaced with high-quality pass on Generate Notes)
-  meeting-notes-2026-06-02_10-30-00.md  ← structured AI notes
-  recording-2026-06-02_10-30-00.wav     ← raw session audio (16 kHz mono, both streams mixed)
-```
+### Audio
 
-When **Include my voice** is active, your segments are prefixed with `[Me]` in the saved transcript so the notes model knows who said what.
+| Setting | Description |
+|---|---|
+| Input / BlackHole | The audio input device to record from |
+| Pass-through to speakers | Route the input back to your output device so you can hear it |
+| Output | Which speaker/headphone to send the pass-through to |
+| Include my voice | Open a second mic stream and label your voice `[Me]` |
+| My Mic | The microphone device for the second stream |
 
-Meeting notes contain:
-- **Summary** — 3–5 sentences
-- **Decisions** — things agreed on
-- **Action Items** — owner · task · due date
-- **Callouts / Risks** — flagged concerns
-- **Open Questions** — unresolved questions
+### Processing
+
+| Setting | Description |
+|---|---|
+| Dark mode | Switch between warm light and dark themes |
+| Live transcription | Show real-time captions in the right pane while recording |
+| Live summary | Generate a rolling AI summary while recording |
+| Summary interval | How often (in seconds) the live summary updates |
+
+### Voice Detection
+
+All parameters update live without restarting a recording.
+
+| Slider | What it controls |
+|---|---|
+| **Sensitivity** | RMS threshold to trigger speech detection — raise for loud rooms, lower for quiet speakers |
+| **Reactivity** | EMA smoothing — higher is snappier but more jittery |
+| **Min speech** | Minimum duration a sound must be sustained before it's treated as speech |
+| **Silence gap** | How long silence must persist before a speech segment is sent for transcription |
 
 ---
 
 ## Architecture
 
+### Stack
+
+| Layer | Technology |
+|---|---|
+| Shell | Electron 36 + Electron Forge 7 |
+| UI | React 18 + Tailwind CSS v4 |
+| Bundler | Vite 6 |
+| Editor | TipTap 3 (StarterKit, TaskList, Underline, Placeholder) |
+| State | Zustand 5 |
+| Persistence | better-sqlite3 (SQLite, main process) |
+| Audio capture | Web Audio API — `getUserMedia`, `AudioWorkletNode` |
+| Downsampling | Custom AudioWorklet (linear interpolation, any rate → 16 kHz mono) |
+| Speech recognition | parakeet.js 1.4 / Parakeet TDT 0.6B V3 (WebGPU with WASM fallback) |
+| Notes AI | @cursor/sdk (Cursor agent, main process) |
+| IPC | Electron `contextBridge` / `ipcMain` |
+
+### Database schema (SQLite)
+
+```
+meetings          — id, title, created_at, status, tags, starred, folder_path …
+notes             — meeting_id, human_doc_json, human_doc_text, summary_md, enhanced_md
+transcript_segments — id, meeting_id, speaker, text, start_ms, end_ms
+todos             — id, meeting_id, text, done, source ('human' | 'ai')
+spaces            — name, icon, color, bg, sort_order
+meetings_fts      — FTS5 virtual table for full-text search
+```
+
 ### Audio pipeline
 
 ```
-┌─ Live recording ─────────────────────────────────────────────────────────────┐
-│                                                                               │
-│  Zoom / BlackHole ──► getUserMedia()                                          │
-│                              │                                                │
-│                   ┌──────────┴──────────────────────┐                        │
-│                   │                                 │                        │
-│             AudioWorklet                    <audio> setSinkId                │
-│          (16 kHz mono PCM)               → Your speakers (pass-through)      │
-│                   │                                                           │
-│          ┌────────┴─────────────────┐                                        │
-│          │                         │                                         │
-│     mainRecBuffer             Energy VAD (mainVAD)                           │
-│  (all frames saved)               │                                          │
-│                            Parakeet → live subtitles                         │
-│                                                                               │
-│  MacBook Mic ──► getUserMedia()  (when "Include my voice" is on)             │
-│                       │                                                       │
-│            ┌──────────┴──────────────────────┐                               │
-│            │                                 │                               │
-│      myRecBuffer                    Energy VAD (myVAD, label="Me")           │
-│   (all frames saved)                         │                               │
-│                                       Parakeet → live subtitles              │
-└──────────────────────────────────────────────┬──────────────────────────────┘
-                                               │  Generate Notes pressed
+┌─ Live recording ──────────────────────────────────────────────────────────────┐
+│                                                                                │
+│  Zoom / BlackHole ──► getUserMedia()                                           │
+│                              │                                                 │
+│                   ┌──────────┴──────────────────────┐                         │
+│                   │                                 │                         │
+│             AudioWorklet                    <audio> setSinkId                 │
+│          (16 kHz mono PCM)               → Your speakers (pass-through)       │
+│                   │                                                            │
+│          ┌────────┴─────────────────┐                                         │
+│          │                         │                                          │
+│     mainRecBuffer             Energy VAD (mainVAD)                            │
+│  (all frames saved)               │                                           │
+│                            Parakeet → live captions (right pane)              │
+│                                                                                │
+│  MacBook Mic ──► getUserMedia()  (when "Include my voice" is on)              │
+│                       │                                                        │
+│            ┌──────────┴──────────────────────┐                                │
+│            │                                 │                                │
+│      myRecBuffer                    Energy VAD (myVAD, label="Me")            │
+│   (all frames saved)                         │                                │
+│                                       Parakeet → live captions               │
+└──────────────────────────────────────────────┬───────────────────────────────┘
+                                               │  Enhance pressed
                                                ▼
-┌─ Hybrid re-transcription ────────────────────────────────────────────────────┐
-│                                                                               │
-│  mainRecBuffer ──► concat Float32 ──► transcribeLongAudio (95 s chunks,      │
-│                                         returnTimestamps, full context)       │
-│                                       → chunks [ { text, timestamp } ]       │
-│                                                                               │
-│  myRecBuffer   ──► concat Float32 ──► transcribeLongAudio (same)             │
-│                                       → chunks [ { text, timestamp, Me } ]   │
-│                                                                               │
-│  Mix both PCM ──► encodeWav ──► recordings/recording-*.wav                   │
-│                                                                               │
-│  Merge & sort chunks by timestamp[0] ──► enhanced transcript                 │
-│  Replace live transcript panel                                                │
-└──────────────────────────────────────────────┬──────────────────────────────┘
+┌─ Hybrid re-transcription ─────────────────────────────────────────────────────┐
+│                                                                                │
+│  mainRecBuffer ──► concat Float32 ──► transcribeLongAudio (95 s chunks,       │
+│                                         returnTimestamps, full context)        │
+│                                       → chunks [ { text, timestamp } ]        │
+│                                                                                │
+│  myRecBuffer   ──► concat Float32 ──► transcribeLongAudio (same)              │
+│                                       → chunks [ { text, timestamp, Me } ]    │
+│                                                                                │
+│  Merge & sort by timestamp ──► enhanced transcript                             │
+│  Mix PCM ──► encodeWav ──► recordings/<timestamp>/recording.wav               │
+└──────────────────────────────────────────────┬───────────────────────────────┘
                                                │
                                     @cursor/sdk Agent.prompt
                                     (Electron main process)
                                                │
-                                    meeting-notes-*.md
-```
-
-```
-Dropped audio file
-   │
-decodeAudioData + OfflineAudioContext (→ 16 kHz mono Float32)
-   │
-transcribeLongAudio (Parakeet, 95 s chunks, no re-transcription pass)
-   │
-same notes pipeline ↑
+                                    Streamed into Enhanced Notes tab
 ```
 
 ### Energy-based VAD
 
-No external VAD library — the detector is a lightweight state machine running in the renderer process on every 10 ms AudioWorklet frame:
+No external VAD library. A lightweight state machine runs in the renderer on every 10 ms AudioWorklet frame:
 
 ```
 SILENCE ──[ smoothedRMS > SPEECH_RMS ]──► SPEAKING
@@ -178,66 +254,21 @@ SILENCE ──[ smoothedRMS > SPEECH_RMS ]──► SPEAKING
 
 SPEAKING ──[ smoothedRMS < SILENCE_RMS
              for ≥ SILENCE_HOLD_FRAMES    ]──► flush to Parakeet → SILENCE
-          ──[ buffer ≥ MAX_SPEECH_FRAMES  ]──► hard flush (avoids GPU OOM)
+          ──[ buffer ≥ MAX_SPEECH_FRAMES  ]──► hard flush (avoids GPU OOM at ~8 s)
 ```
 
-Energy is tracked as an exponential moving average (EMA) of the per-frame RMS:
+Energy is tracked as an EMA of the per-frame RMS: `smoothedRMS = α × rms(frame) + (1 − α) × smoothedRMS`
 
-```
-smoothedRMS = α × rms(frame) + (1 − α) × smoothedRMS
-```
-
-All five parameters (α, speech threshold, silence threshold, min speech duration, silence hold) are exposed via the EQ flyout and update live without restarting.
-
-Each audio source (BlackHole stream, mic stream) gets its own independent VAD instance so they don't share state or interfere with each other.
-
-### Dual stream / speaker labelling
-
-When **Include my voice** is enabled the app opens a second `getUserMedia` stream for the microphone in parallel with the BlackHole stream. The mic stream is:
-- Fed into its own AudioWorklet → VAD → Parakeet pipeline
-- **Never** routed to the pass-through output (so you don't hear yourself back)
-- Labelled `[Me]` in the transcript and `ME:` (purple) in the live UI
-
-The BlackHole stream carries no label, so the transcript reads naturally as alternating unlabelled (others) and `[Me]` (you) segments.
-
-### Pass-through monitoring
-
-When Pass Through is enabled, a standard `<audio>` element is created with `srcObject` set to the BlackHole media stream. `setSinkId()` routes playback to the user's chosen output device. The AudioWorklet → silent gain node → `audioContext.destination` connection exists in parallel purely to keep Chromium's audio graph alive — without it, the worklet's `process()` method is never called (lazy graph optimisation in Electron's Chromium).
+Each audio source (BlackHole stream, mic stream) gets its own independent VAD instance.
 
 ### Transcription engine
 
 [parakeet.js](https://github.com/thatcherfreeman/parakeet.js) wraps NVIDIA's Parakeet TDT 0.6B V3 model:
-- **Backend:** WebGPU (fp32 encoder) with automatic WASM fallback on unsupported hardware
 - **Live mode:** `transcribeSegment()` on each VAD-flushed buffer (0.5–8 s)
-- **File / re-transcription mode:** `transcribeLongAudio()` with 95 s overlapping chunks, `returnTimestamps: true` for chunk-level `[start, end]` timestamps used by the merge step
-- Model weights are fetched from Hugging Face Hub on first run and cached in browser IndexedDB — no re-download on subsequent launches
-
-### Hybrid re-transcription
-
-During a live session the AudioWorklet frames are accumulated in two in-memory buffers (`mainRecBuffer` for the call stream, `myRecBuffer` for the mic stream) alongside the normal VAD pipeline. When Generate Notes is pressed:
-
-1. Both buffers are concatenated into full Float32 arrays and passed to `transcribeLongAudio` with chunk timestamps.
-2. The two sets of timestamped chunks are merged and sorted chronologically — mic chunks are tagged `[Me]`.
-3. The mixed PCM (both streams summed) is WAV-encoded (16-bit PCM) and saved to `recordings/recording-*.wav`.
-4. `currentTranscript` is replaced with the enhanced text before notes are generated.
-
-Memory overhead: ~115 MB per stream per hour at 16 kHz mono Float32. The re-transcription pass runs at well under real-time on WebGPU.
-
-### Notes generation
-
-The Cursor SDK (`@cursor/sdk`) runs in the Electron main process (Node.js context). On session end, the full transcript is sent to a local Cursor agent with a structured prompt requesting Summary, Decisions, Action Items, Callouts/Risks, and Open Questions. The result is written to `recordings/meeting-notes-<timestamp>.md`. The transcript is also auto-saved with a 2-second debounce during recording so nothing is lost if the app crashes.
-
-### Stack
-
-| Layer | Technology |
-|---|---|
-| Shell | Electron 36 + Electron Forge |
-| Bundler | Vite 6 |
-| Audio capture | Web Audio API — `getUserMedia`, `AudioWorkletNode` |
-| Downsampling | Custom AudioWorklet (linear interpolation, any rate → 16 kHz mono) |
-| Speech recognition | parakeet.js 1.4 / Parakeet TDT 0.6B V3 (WebGPU) |
-| Notes AI | @cursor/sdk (local Cursor agent) |
-| IPC | Electron `contextBridge` / `ipcMain` |
+- **Batch mode:** `transcribeLongAudio()` with 95 s overlapping chunks, `returnTimestamps: true` for the hybrid merge step
+- **Dictation mode:** same `transcribeSegment()` on a push-to-talk buffer, result inserted directly into the TipTap editor
+- Model weights are fetched from Hugging Face Hub on first run and cached in IndexedDB — no re-download on subsequent launches
+- **WebGPU → WASM fallback:** if the GPU session fails to allocate (e.g. low VRAM), the model retries automatically with WASM (CPU), trading speed for reliability
 
 ---
 
@@ -246,10 +277,12 @@ The Cursor SDK (`@cursor/sdk`) runs in the Electron main process (Node.js contex
 | Symptom | Fix |
 |---|---|
 | No transcript / silence | Zoom speaker must be set to BlackHole. Check `Zoom → Settings → Audio → Speaker`. |
-| Transcript only captures others, not me | Enable **Include my voice** and select your microphone. |
+| Transcript only captures others, not me | Enable **Include my voice** in Settings and select your microphone. |
 | `Microphone error` | Grant mic access: `System Settings → Privacy → Microphone → Stenographer` |
-| Model download stalls | Check network and retry. Cache lives in browser IndexedDB (DevTools → Application → IndexedDB). |
+| Model download stalls | Check network and retry. Cache lives in IndexedDB (DevTools → Application → IndexedDB). |
 | Notes not generated | Check `CURSOR_API_KEY` in `.env` — must start with `cursor_`. |
-| Transcript cuts off mid-sentence | Lower **Silence Gap** in the EQ panel so segments flush sooner. |
-| Background noise triggers transcription | Raise **Min Speech** and lower **Sensitivity** in the EQ panel. |
-| Quiet voices not captured | Raise **Sensitivity** in the EQ panel (try 7–8). |
+| Transcript cuts off mid-sentence | Lower **Silence gap** in Settings so segments flush sooner. |
+| Background noise triggers transcription | Raise **Min speech** and lower **Sensitivity** in Settings. |
+| Quiet voices not captured | Raise **Sensitivity** in Settings (try 7–8). |
+| `std::bad_alloc` in console | GPU out of memory — close other GPU-heavy apps and restart. The app will fall back to WASM automatically if WebGPU fails. |
+| Dictation mic button does nothing | The Parakeet model must be loaded first. Open a note and wait for the model initialisation to complete (progress bar at top). |
