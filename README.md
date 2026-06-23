@@ -2,7 +2,7 @@
 
 # Stenographer
 
-A local-first, notes-first meeting companion for macOS. Write notes while you meet, record and transcribe the conversation, then let AI merge everything into polished meeting notes — all on-device. Nothing leaves your machine.
+A local-first, notes-first meeting companion for macOS. Write notes while you meet, record and transcribe the conversation, then let AI merge everything into polished meeting notes. Transcription runs fully on-device — your audio never leaves your machine. The Generate step sends your notes and transcript to Cursor's AI to produce the final polished output.
 
 Powered by **Parakeet TDT V3** (on-device speech recognition via WebGPU/WASM) and the **Cursor SDK** (AI notes generation).
 
@@ -26,14 +26,14 @@ Powered by **Parakeet TDT V3** (on-device speech recognition via WebGPU/WASM) an
 
 ### Recording & transcription
 - **Live VAD-driven subtitles** — energy-based voice-activity detection runs in an AudioWorklet; detected speech chunks are flushed to Parakeet for real-time captions
-- **Hybrid re-transcription** — full audio buffers are saved in memory during recording; when you hit Enhance, a higher-quality full-context pass is run over the whole session, producing a much more accurate final transcript
+- **Hybrid re-transcription** — full audio buffers are saved in memory during recording; when you hit Generate, a higher-quality full-context pass is run over the whole session, producing a much more accurate final transcript
 - **Dual-stream capture** — optionally capture both the call audio (via BlackHole) and your own microphone simultaneously, with each stream labelled separately (`[Me]`)
 - **Pass-through monitoring** — route BlackHole audio back to your speakers/headphones so you still hear the call while it's being captured
 - **File import** — drag a `.wav / .mp3 / .m4a / .flac / .ogg / .webm` file onto the app to transcribe a recording after the fact
 - **WebGPU → WASM fallback** — if the GPU is out of memory, the model automatically retries with WASM (CPU) so transcription still works
 
-### AI enhancement
-- **Enhance** merges your handwritten notes with the full transcript using the Cursor SDK to produce clean, structured meeting notes
+### AI generation
+- **Generate** merges your handwritten notes with the full transcript using the Cursor SDK to produce clean, structured meeting notes
 - **Live summary** (optional) — rolling AI summary updates every N seconds while recording, shown in the right pane alongside the live transcript
 - Right pane is only shown when live transcription or live summary is enabled in settings
 
@@ -107,7 +107,7 @@ The first launch downloads the Parakeet V3 model weights (~350 MB) from Hugging 
 3. Hit **Record**. Live captions appear in the right pane (if Live Transcription is on).
 4. Keep taking notes in the left pane while the call is being captured.
 5. Hit **Record** again to stop.
-6. Hit **Enhance** to run the AI merge of your notes + transcript.
+6. Hit **Generate** to run the AI merge of your notes + transcript.
 
 ### Dictation (personal notes)
 
@@ -223,7 +223,7 @@ meetings_fts      — FTS5 virtual table for full-text search
 │   (all frames saved)                         │                                │
 │                                       Parakeet → live captions               │
 └──────────────────────────────────────────────┬───────────────────────────────┘
-                                               │  Enhance pressed
+                                               │  Generate pressed
                                                ▼
 ┌─ Hybrid re-transcription ─────────────────────────────────────────────────────┐
 │                                                                                │
@@ -234,14 +234,14 @@ meetings_fts      — FTS5 virtual table for full-text search
 │  myRecBuffer   ──► concat Float32 ──► transcribeLongAudio (same)              │
 │                                       → chunks [ { text, timestamp, Me } ]    │
 │                                                                                │
-│  Merge & sort by timestamp ──► enhanced transcript                             │
+│  Merge & sort by timestamp ──► generated transcript                            │
 │  Mix PCM ──► encodeWav ──► recordings/<timestamp>/recording.wav               │
 └──────────────────────────────────────────────┬───────────────────────────────┘
                                                │
                                     @cursor/sdk Agent.prompt
                                     (Electron main process)
                                                │
-                                    Streamed into Enhanced Notes tab
+                                    Streamed into Generated Notes tab
 ```
 
 ### Energy-based VAD
