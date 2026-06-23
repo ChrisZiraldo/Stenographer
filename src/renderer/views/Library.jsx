@@ -174,9 +174,10 @@ const COLOR_PRESETS = [
 
 // ── Meeting row ───────────────────────────────────────────────────────────────
 
-function MeetingRow({ meeting, onOpen, onDelete, onRemoveTag, isSelected }) {
+function MeetingRow({ meeting, onOpen, onDelete, onRemoveTag, onToggleStar, isSelected }) {
   const hasAudio = !!meeting.audio_path;
   const title    = cleanTitle(meeting.title);
+  const isStarred = !!meeting.starred;
   const timeStr  = meeting.created_at ? (() => {
     const d = new Date(meeting.created_at);
     const time = format(d, 'HH:mm');
@@ -221,25 +222,37 @@ function MeetingRow({ meeting, onOpen, onDelete, onRemoveTag, isSelected }) {
         )}
       </div>
 
-      <div className="flex items-center gap-1.5 flex-shrink-0">
-        {hasAudio && <Mic size={11} className="text-[#c0b9b0] dark:text-[#5e5850]" />}
-        {timeStr && <span className="text-[12px] text-[#9c9285] dark:text-[#7a7268] tabular-nums group-hover:hidden">{timeStr}</span>}
+      <div className="flex items-center gap-1 flex-shrink-0">
+        {hasAudio && <Mic size={12} className="text-[#c0b9b0] dark:text-[#5e5850] mr-0.5" />}
+        {timeStr && <span className="text-[12px] text-[#9c9285] dark:text-[#7a7268] tabular-nums group-hover:hidden mr-1">{timeStr}</span>}
+        <button
+          className={`flex items-center justify-center w-7 h-7 rounded-[8px] transition-all cursor-pointer ${
+            isStarred
+              ? 'opacity-100 text-[#c47a00] bg-[#fff3d6] dark:bg-[#3a2a10]'
+              : 'opacity-0 group-hover:opacity-100 text-[#a09890] dark:text-[#6b6358] hover:bg-[#fff3d6] dark:hover:bg-[#3a2a10] hover:text-[#c47a00]'
+          }`}
+          onClick={(e) => { e.stopPropagation(); onToggleStar(meeting.id); }}
+          aria-label={isStarred ? 'Unstar' : 'Star'}
+          title={isStarred ? 'Remove star' : 'Star this note'}
+        >
+          <Star size={14} fill={isStarred ? 'currentColor' : 'none'} />
+        </button>
         {onRemoveTag && (
           <button
-            className="opacity-0 group-hover:opacity-100 p-1 rounded-[6px] hover:bg-[#fff0d6] dark:hover:bg-[#3a2a10] hover:text-[#c47a00] text-[#c0b9b0] dark:text-[#6b6358] transition-all cursor-pointer"
+            className="opacity-0 group-hover:opacity-100 flex items-center justify-center w-7 h-7 rounded-[8px] hover:bg-[#fff0d6] dark:hover:bg-[#3a2a10] hover:text-[#c47a00] text-[#a09890] dark:text-[#6b6358] transition-all cursor-pointer"
             onClick={(e) => { e.stopPropagation(); onRemoveTag(meeting.id); }}
             aria-label="Remove from space"
             title="Remove from this space"
           >
-            <Tag size={12} />
+            <Tag size={14} />
           </button>
         )}
         <button
-          className="opacity-0 group-hover:opacity-100 p-1 rounded-[6px] hover:bg-[#f5e0d4] dark:hover:bg-[#3a1a10] hover:text-[#b45837] text-[#c0b9b0] dark:text-[#6b6358] transition-all cursor-pointer"
+          className="opacity-0 group-hover:opacity-100 flex items-center justify-center w-7 h-7 rounded-[8px] hover:bg-[#f5e0d4] dark:hover:bg-[#3a1a10] hover:text-[#b45837] text-[#a09890] dark:text-[#6b6358] transition-all cursor-pointer"
           onClick={(e) => { e.stopPropagation(); onDelete(meeting.id); }}
           aria-label="Delete"
         >
-          <Trash2 size={12} />
+          <Trash2 size={14} />
         </button>
       </div>
     </div>
@@ -754,6 +767,11 @@ export function Library() {
     refresh();
   }, [meetings, refresh]);
 
+  const handleToggleStar = useCallback(async (id) => {
+    await window.api.db.toggleStar(id);
+    refresh();
+  }, [refresh]);
+
   const isSearching      = searchQuery.trim().length > 0;
   const filteredMeetings = activeTag
     ? meetings.filter((m) => {
@@ -849,6 +867,7 @@ export function Library() {
                           onOpen={handleOpen}
                           onDelete={handleDelete}
                           onRemoveTag={activeTag ? (id) => handleRemoveTag(id, activeTag) : undefined}
+                          onToggleStar={handleToggleStar}
                           isSelected={selectedId === m.id}
                         />
                       ))}

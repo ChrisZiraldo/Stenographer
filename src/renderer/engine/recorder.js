@@ -236,7 +236,7 @@ export class Recorder {
 
     const hasContent = this.currentTranscript.trim() || this.mainRecBuffer.length >= 1000;
     this._emit('status',
-      hasContent ? 'Paused — hit Go to resume or Enhance Notes when done' : 'Ready — pick devices and hit Go',
+      hasContent ? 'Paused — hit Go to resume or Generate Notes when done' : 'Ready — pick devices and hit Go',
       hasContent ? 'paused' : 'idle'
     );
   }
@@ -290,7 +290,7 @@ export class Recorder {
     this._passthroughStream = null;
   }
 
-  // ── High-quality re-transcription (for "Enhance" / "Generate Notes") ────────
+  // ── High-quality re-transcription (for "Generate Notes") ────────────────────
 
   async enhanceTranscript() {
     if (this.mainRecBuffer.length === 0) return false;
@@ -325,7 +325,7 @@ export class Recorder {
         }
       }
     } catch (err) {
-      console.error('[Recorder] Enhance main failed:', err);
+      console.error('[Recorder] Generate main failed:', err);
       this.currentTranscript = previous;
       this._emit('transcript', this.currentTranscript);
       this._emit('status', 'Re-processing failed — using prior transcript.', 'paused');

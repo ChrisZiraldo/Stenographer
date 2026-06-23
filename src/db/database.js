@@ -123,6 +123,13 @@ function runMigrations(db) {
       INSERT OR REPLACE INTO schema_version(version) VALUES (2);
     `);
   }
+
+  if (currentVersion < 3) {
+    db.exec(`
+      ALTER TABLE meetings ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;
+      INSERT OR REPLACE INTO schema_version(version) VALUES (3);
+    `);
+  }
 }
 
 export function closeDb() {

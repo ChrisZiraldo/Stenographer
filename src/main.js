@@ -201,7 +201,7 @@ ipcMain.handle('generate-notes', async (_event, { transcriptText, notesPath, mee
             await writeFile(notesPath, fullText, 'utf8');
           }
           if (meetingId) {
-            repo.saveEnhancedNotes(meetingId, fullText);
+            repo.saveGeneratedNotes(meetingId, fullText);
           }
         } catch (err) {
           console.warn('[notes] Failed to save:', err.message);
@@ -242,7 +242,7 @@ ipcMain.handle('generate-merge', async (_event, { humanNotesText, transcriptText
       if (settled) return;
       settled = true;
       if (result.ok && fullText.trim() && meetingId) {
-        try { repo.saveEnhancedNotes(meetingId, fullText); } catch { /* best-effort */ }
+        try { repo.saveGeneratedNotes(meetingId, fullText); } catch { /* best-effort */ }
       }
       resolve(result);
     };
@@ -382,11 +382,12 @@ ipcMain.handle('db:saveNoteDoc',  (_e, { meetingId, humanDocJson, humanDocText }
   return { ok: true };
 });
 ipcMain.handle('db:saveSummary',  (_e, { meetingId, summaryMd }) => { repo.saveSummary(meetingId, summaryMd); return { ok: true }; });
-ipcMain.handle('db:saveEnhanced', (_e, { meetingId, enhancedMd }) => { repo.saveEnhancedNotes(meetingId, enhancedMd); return { ok: true }; });
+ipcMain.handle('db:saveGenerated', (_e, { meetingId, generatedMd }) => { repo.saveGeneratedNotes(meetingId, generatedMd); return { ok: true }; });
 ipcMain.handle('db:upsertSegments',(_e, { meetingId, segments }) => { repo.upsertSegments(meetingId, segments); return { ok: true }; });
 ipcMain.handle('db:getSegments',  (_e, meetingId) => repo.getSegments(meetingId));
-ipcMain.handle('db:getSpaces',   () => repo.getSpaces());
-ipcMain.handle('db:saveSpaces',  (_e, spaces) => { repo.saveSpaces(spaces); return { ok: true }; });
+ipcMain.handle('db:getSpaces',      () => repo.getSpaces());
+ipcMain.handle('db:saveSpaces',     (_e, spaces) => { repo.saveSpaces(spaces); return { ok: true }; });
+ipcMain.handle('db:toggleStar',     (_e, id) => ({ starred: repo.toggleMeetingStar(id) }));
 ipcMain.handle('db:listTodos',    (_e, opts) => repo.listTodos(opts));
 ipcMain.handle('db:upsertTodo',   (_e, todo) => ({ id: repo.upsertTodo(todo) }));
 ipcMain.handle('db:toggleTodo',   (_e, id)   => { repo.toggleTodo(id); return { ok: true }; });

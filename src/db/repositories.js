@@ -19,10 +19,16 @@ export function listMeetings({ limit = 50, offset = 0, tag = null } = {}) {
            (SELECT COUNT(*) FROM todos WHERE meeting_id = m.id) AS total_todos
     FROM meetings m
     LEFT JOIN notes n ON n.meeting_id = m.id
-    ORDER BY m.created_at DESC
+    ORDER BY m.starred DESC, m.created_at DESC
     LIMIT ? OFFSET ?
   `;
   return db.prepare(query).all(limit, offset);
+}
+
+export function toggleMeetingStar(id) {
+  const db = getDb();
+  db.prepare('UPDATE meetings SET starred = CASE WHEN starred = 1 THEN 0 ELSE 1 END, updated_at = ? WHERE id = ?').run(Date.now(), id);
+  return db.prepare('SELECT starred FROM meetings WHERE id = ?').get(id)?.starred ?? 0;
 }
 
 export function getMeeting(id) {
@@ -97,9 +103,9 @@ export function saveSummary(meetingId, summaryMd) {
   db.prepare('UPDATE meetings SET updated_at = ? WHERE id = ?').run(Date.now(), meetingId);
 }
 
-export function saveEnhancedNotes(meetingId, enhancedMd) {
+export function saveGeneratedNotes(meetingId, generatedMd) {
   const db = getDb();
-  db.prepare('UPDATE notes SET enhanced_md = ? WHERE meeting_id = ?').run(enhancedMd, meetingId);
+  db.prepare('UPDATE notes SET enhanced_md = ? WHERE meeting_id = ?').run(generatedMd, meetingId);
   db.prepare('UPDATE meetings SET updated_at = ? WHERE id = ?').run(Date.now(), meetingId);
   updateFts(meetingId);
 }

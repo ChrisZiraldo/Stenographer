@@ -791,7 +791,7 @@ async function enhanceTranscript() {
       }
     }
   } catch (err) {
-    console.error('[Enhance] Main stream re-transcription failed:', err);
+    console.error('[Generate] Main stream re-transcription failed:', err);
     // Restore previous transcript so notes generation still has something to work with.
     currentTranscript = previousTranscript;
     updateTranscriptPanel(currentTranscript);
@@ -806,7 +806,7 @@ async function enhanceTranscript() {
       const myResult = await engine.transcribeFileTimestamped(myPcm);
       myChunks = (myResult.chunks ?? []).map((c) => ({ ...c, speaker: 'Me' }));
     } catch (err) {
-      console.warn('[Enhance] Mic stream re-transcription failed:', err);
+      console.warn('[Generate] Mic stream re-transcription failed:', err);
     }
 
     if (myChunks.length > 0) {

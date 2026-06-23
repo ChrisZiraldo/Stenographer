@@ -22,9 +22,9 @@ export const useAppStore = create((set, get) => ({
   summaryState: '',          // 'Transcribing…' | 'Summarising…' | ''
   rightTab: 'transcript',    // 'summary' | 'transcript'
   rightPaneOpen: true,
-  isEnhancing: false,
-  enhancedNotes: '',
-  notesView: 'human',        // 'human' | 'enhanced'
+  isGenerating: false,
+  generatedNotes: '',
+  notesView: 'human',        // 'human' | 'generated'
 
   // ── Device settings ────────────────────────────────────────────────────────
   devices: [],
@@ -74,8 +74,8 @@ export const useAppStore = create((set, get) => ({
   setRightTab:      (t) => set({ rightTab: t }),
   toggleRightPane:  () => set((s) => ({ rightPaneOpen: !s.rightPaneOpen })),
 
-  setIsEnhancing:  (b) => set({ isEnhancing: b }),
-  setEnhancedNotes:(n) => set({ enhancedNotes: n }),
+  setIsGenerating:  (b) => set({ isGenerating: b }),
+  setGeneratedNotes:(n) => set({ generatedNotes: n }),
   setNotesView:    (v) => set({ notesView: v }),
 
   setDevices:          (d) => set({ devices: d }),
@@ -102,8 +102,8 @@ export const useAppStore = create((set, get) => ({
     liveSegments: [],
     liveSummary: '',
     summaryState: '',
-    isEnhancing: false,
-    enhancedNotes: '',
+    isGenerating: false,
+    generatedNotes: '',
     notesView: 'human',
   }),
 }));

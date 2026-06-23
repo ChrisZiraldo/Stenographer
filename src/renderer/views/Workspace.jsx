@@ -208,8 +208,8 @@ export function Workspace() {
     inputDeviceId, outputDeviceId, micDeviceId,
     passthroughEnabled, captureMyVoice,
     notesView, setNotesView,
-    isEnhancing, setIsEnhancing,
-    enhancedNotes, setEnhancedNotes,
+    isGenerating, setIsGenerating,
+    generatedNotes, setGeneratedNotes,
     resetWorkspaceState,
     liveSegments, setLiveSegments, setLiveTranscript, setLiveSummary,
   } = useAppStore();
@@ -224,7 +224,7 @@ export function Workspace() {
   const [dictationError, setDictationError] = useState(null);
   const editorInstanceRef           = useRef(null);
   const audioRef                    = useRef(null);
-  const enhancedRef                 = useRef('');
+  const generatedRef                = useRef('');
   const summaryTimerRef             = useRef(null);
 
   const loadMeeting = useCallback(async () => {
@@ -233,8 +233,8 @@ export function Workspace() {
     setMeeting(data);
     if (data?.notes?.human_doc_json) setInitialDoc(data.notes.human_doc_json);
     if (data?.notes?.enhanced_md) {
-      setEnhancedNotes(data.notes.enhanced_md);
-      enhancedRef.current = data.notes.enhanced_md;
+      setGeneratedNotes(data.notes.enhanced_md);
+      generatedRef.current = data.notes.enhanced_md;
     }
 
     // Restore saved transcript segments when the in-memory recorder buffer is gone
@@ -243,7 +243,7 @@ export function Workspace() {
       const saved = await window.api.db.getSegments(activeMeetingId);
       if (saved?.length) {
         setLiveSegments(saved.map((s) => ({ id: s.id ?? (Date.now() + Math.random()), ...s })));
-        // Rebuild currentTranscript so the recorder-based canEnhance check also passes
+        // Rebuild currentTranscript so the recorder-based canGenerate check also passes
         recorder.currentTranscript = saved.map((s) => s.text).join(' ');
       }
     }
@@ -304,12 +304,12 @@ export function Workspace() {
   }, [activeMeetingId, inputDeviceId, outputDeviceId, micDeviceId, captureMyVoice,
       liveTxEnabled, passthroughEnabled, liveSummaryEnabled, summaryIntervalSecs, startedAt]);
 
-  // ── Enhance ──
+  // ── Generate ──
 
-  const handleEnhance = useCallback(async () => {
+  const handleGenerate = useCallback(async () => {
     if (!activeMeetingId) return;
-    setIsEnhancing(true);
-    setNotesView('enhanced');
+    setIsGenerating(true);
+    setNotesView('generated');
 
     if (recorder.mainRecBuffer.length > 0) {
       // Full re-transcription from raw audio buffer
@@ -332,11 +332,11 @@ export function Workspace() {
       liveSegments.map((s) => s.text).join(' ') ||
       savedSegments.map((s) => s.text).join(' ');
 
-    enhancedRef.current = '';
-    setEnhancedNotes('');
+    generatedRef.current = '';
+    setGeneratedNotes('');
     window.api.onMergeChunk((chunk) => {
-      enhancedRef.current += chunk;
-      setEnhancedNotes(enhancedRef.current);
+      generatedRef.current += chunk;
+      setGeneratedNotes(generatedRef.current);
     });
 
     try {
@@ -359,7 +359,7 @@ export function Workspace() {
       }
     } finally {
       window.api.offMergeChunk();
-      setIsEnhancing(false);
+      setIsGenerating(false);
     }
   }, [activeMeetingId, meeting, loadMeeting]);
 
@@ -377,7 +377,7 @@ export function Workspace() {
   }, []);
 
   const handleExportMarkdown = () => {
-    const text = notesView === 'enhanced' ? enhancedNotes : '';
+    const text = notesView === 'generated' ? generatedNotes : '';
     if (!text) return;
     const blob = new Blob([text], { type: 'text/markdown' });
     const url  = URL.createObjectURL(blob);
@@ -388,8 +388,8 @@ export function Workspace() {
   };
 
   const isRecording = recorder.isRecording;
-  // Allow Enhance when: in-memory buffer/transcript is present OR we have saved segments (restored from DB)
-  const canEnhance  = !isEnhancing && (
+  // Allow Generate when: in-memory buffer/transcript is present OR we have saved segments (restored from DB)
+  const canGenerate = !isGenerating && (
     recorder.mainRecBuffer?.length > 0 ||
     recorder.currentTranscript ||
     liveSegments.length > 0
@@ -446,6 +446,23 @@ export function Workspace() {
           style={{ background: 'transparent', border: 'none' }}
         />
 
+        <button
+          className="no-drag btn-icon flex-shrink-0"
+          onClick={async () => {
+            if (!activeMeetingId) return;
+            const { starred } = await window.api.db.toggleStar(activeMeetingId);
+            setMeeting((m) => m ? { ...m, starred } : m);
+          }}
+          aria-label={meeting?.starred ? 'Remove star' : 'Star this note'}
+          title={meeting?.starred ? 'Remove star' : 'Star this note'}
+        >
+          <Star
+            size={15}
+            fill={meeting?.starred ? '#c47a00' : 'none'}
+            color={meeting?.starred ? '#c47a00' : 'currentColor'}
+          />
+        </button>
+
         <div className="flex items-center gap-1.5 no-drag flex-shrink-0">
           <Timer startedAt={startedAt} isRunning={isRecording} />
           <AudioBars />
@@ -453,14 +470,14 @@ export function Workspace() {
           <RecordButton status={recordingStatus} loadingProgress={loadingProgress} onClick={handleRecordToggle} />
 
           <button
-            onClick={handleEnhance}
-            disabled={!canEnhance || isEnhancing}
+            onClick={handleGenerate}
+            disabled={!canGenerate || isGenerating}
             style={{ borderRadius: 8, fontSize: 13, fontWeight: 600, padding: '7px 16px', display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', transition: 'all 0.15s', border: '1px solid transparent' }}
-            className={`${!canEnhance || isEnhancing ? 'opacity-40 cursor-not-allowed' : ''} bg-[#e8eaf5] dark:bg-[#252035] text-[#3a3d7a] dark:text-[#a8abda] border-[#c8cbea] dark:border-[#383a60] hover:bg-[#daddf0] dark:hover:bg-[#2e3045]`}
+            className={`${!canGenerate || isGenerating ? 'opacity-40 cursor-not-allowed' : ''} bg-[#e8eaf5] dark:bg-[#252035] text-[#3a3d7a] dark:text-[#a8abda] border-[#c8cbea] dark:border-[#383a60] hover:bg-[#daddf0] dark:hover:bg-[#2e3045]`}
           >
-            {isEnhancing
-              ? <><Loader size={12} className="animate-spin flex-shrink-0" /> Enhancing…</>
-              : <><Sparkles size={12} className="flex-shrink-0" /> Enhance</>
+            {isGenerating
+              ? <><Loader size={12} className="animate-spin flex-shrink-0" /> Generating…</>
+              : <><Sparkles size={12} className="flex-shrink-0" /> Generate</>
             }
           </button>
 
@@ -474,8 +491,8 @@ export function Workspace() {
         </div>
       </div>
 
-      {/* ── Loading progress strip — only while model loads or enhancing ── */}
-      {(recordingStatus === 'loading' || isEnhancing) && statusMessage && (
+      {/* ── Loading progress strip — only while model loads or generating ── */}
+      {(recordingStatus === 'loading' || isGenerating) && statusMessage && (
         <div className="relative px-4 py-1.5 bg-[#fefcf7] dark:bg-[#2a261c] border-b border-[#ede9df] dark:border-[#46412e] flex items-center gap-2 flex-shrink-0 overflow-hidden">
           {loadingProgress?.pct != null && (
             <div
@@ -513,20 +530,20 @@ export function Workspace() {
                 My Notes
               </button>
               <button
-                onClick={() => setNotesView('enhanced')}
+                onClick={() => setNotesView('generated')}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6,
                   padding: '5px 13px', borderRadius: 6, border: 'none', cursor: 'pointer',
-                  fontSize: 13, fontWeight: notesView === 'enhanced' ? 600 : 500,
-                  background: notesView === 'enhanced' ? 'var(--bg-surface)' : 'transparent',
-                  color: notesView === 'enhanced' ? 'var(--ink)' : 'var(--ink-faint)',
-                  boxShadow: notesView === 'enhanced' ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
+                  fontSize: 13, fontWeight: notesView === 'generated' ? 600 : 500,
+                  background: notesView === 'generated' ? 'var(--bg-surface)' : 'transparent',
+                  color: notesView === 'generated' ? 'var(--ink)' : 'var(--ink-faint)',
+                  boxShadow: notesView === 'generated' ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
                   transition: 'all 0.15s',
                 }}
               >
-                <Sparkles size={12} style={{ opacity: notesView === 'enhanced' ? 1 : 0.6 }} />
-                Enhanced
-                {enhancedNotes && (
+                <Sparkles size={12} style={{ opacity: notesView === 'generated' ? 1 : 0.6 }} />
+                Generated
+                {generatedNotes && (
                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#5c6e00', flexShrink: 0 }} />
                 )}
               </button>
@@ -546,7 +563,7 @@ export function Workspace() {
             />
 
             <div className="ml-auto flex items-center gap-1 flex-shrink-0">
-              {notesView === 'enhanced' && enhancedNotes && (
+              {notesView === 'generated' && generatedNotes && (
                 <Button variant="ghost" size="xs" onClick={handleExportMarkdown}>
                   <Download size={12} />
                   {exportDone ? 'Saved!' : 'Export'}
@@ -568,7 +585,7 @@ export function Workspace() {
               </div>
             ) : (
               <div className="flex-1 flex flex-col min-h-0">
-                <EnhancedNotesView md={enhancedNotes} isStreaming={isEnhancing} />
+                <GeneratedNotesView md={generatedNotes} isStreaming={isGenerating} />
               </div>
             )}
 
@@ -654,7 +671,7 @@ export function Workspace() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function EnhancedNotesView({ md, isStreaming }) {
+function GeneratedNotesView({ md, isStreaming }) {
   const scrollRef = useRef(null);
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -662,7 +679,7 @@ function EnhancedNotesView({ md, isStreaming }) {
 
   if (isStreaming && !md) return (
     <div className="flex items-center justify-center h-full gap-2.5 text-[13px] text-[#7c5fc2]">
-      <Loader size={15} className="animate-spin" /> Generating enhanced notes…
+      <Loader size={15} className="animate-spin" /> Generating notes…
     </div>
   );
 
@@ -671,9 +688,9 @@ function EnhancedNotesView({ md, isStreaming }) {
       <div className="w-10 h-10 rounded-2xl bg-[#ede8f8] flex items-center justify-center mb-3">
         <Sparkles size={18} className="text-[#7c5fc2]" />
       </div>
-      <p className="text-[13px] font-medium text-[#5c5448] dark:text-[#a09890] mb-1">Enhanced Notes</p>
+      <p className="text-[13px] font-medium text-[#5c5448] dark:text-[#a09890] mb-1">Generated Notes</p>
       <p className="text-[12px] text-[#9c9285] dark:text-[#6b6358] leading-relaxed max-w-[200px]">
-        Hit "Enhance" to merge your notes with the transcript into polished meeting notes.
+        Hit "Generate" to merge your notes with the transcript into polished meeting notes.
       </p>
     </div>
   );
