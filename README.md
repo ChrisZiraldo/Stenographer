@@ -38,10 +38,10 @@ Powered by **Parakeet TDT V3** (on-device speech recognition via WebGPU/WASM) an
 - Right pane is only shown when live transcription or live summary is enabled in settings
 
 ### Organisation
-- **Spaces** — built-in (Work, 1:1, Standup, Planning, Interview, Review) plus unlimited custom spaces with an icon + colour picker
+- **Spaces** — built-in (Work, Personal, 1:1, Standup, Planning, Interview, Review) plus unlimited custom spaces with an icon + colour picker
 - Drag notes onto a sidebar space to apply a tag, or use the inline space tag strip inside a note
 - Drag spaces to reorder them in the sidebar
-- Right-click a note in a space to remove it from that space
+- Hover a note in a space to reveal the tag icon — click it to remove the note from that space
 
 ### Appearance & settings
 - **Dark mode** toggle in Settings (warm dark palette, not harsh grey)
@@ -130,7 +130,7 @@ Click the **star icon** on hover in the Library list, or the star in the note's 
 - Click **+** next to the Spaces heading to create a custom space — choose an icon, colour, and name.
 - Hover a note inside a space to reveal the **tag icon** — click it to remove the note from that space.
 - Drag spaces by their grip handle to reorder them.
-- Long-hover a space name to reveal the delete option.
+- Hover a space to reveal the delete option.
 
 ---
 
@@ -175,7 +175,7 @@ All parameters update live without restarting a recording.
 | Layer | Technology |
 |---|---|
 | Shell | Electron 36 + Electron Forge 7 |
-| UI | React 18 + Tailwind CSS v4 |
+| UI | React 19 + Tailwind CSS v4 |
 | Bundler | Vite 6 |
 | Editor | TipTap 3 (StarterKit, TaskList, Underline, Placeholder) |
 | State | Zustand 5 |

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, session, shell } from 'electron';
 
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -24,6 +24,26 @@ const DEV_SERVER_URL = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL !== 'undefined' ? 
 const VITE_NAME = typeof MAIN_WINDOW_VITE_NAME !== 'undefined' ? MAIN_WINDOW_VITE_NAME : 'main_window';
 
 let mainWindow = null;
+
+function buildMenu() {
+  const template = [
+    { role: 'appMenu' },
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Import Audio…',
+          accelerator: 'CmdOrCtrl+O',
+          click: () => mainWindow?.webContents.send('trigger-file-import'),
+        },
+      ],
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -93,6 +113,7 @@ app.whenReady().then(() => {
     },
   );
   createWindow();
+  buildMenu();
   startDevNavWatcher();
 });
 

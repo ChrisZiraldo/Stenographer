@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
-  Plus, Search, Home, Mic,
+  Plus, Search, Home, Mic, Upload,
   Trash2, X, ChevronDown, ChevronRight,
   Briefcase, User, Users, Calendar, Star, FileText, CheckCircle,
   Settings, Tag, MessageSquare,
@@ -698,10 +698,13 @@ function SearchResults({ results, onOpen }) {
 export function Library() {
   const { meetings, globalTodos, searchQuery, searchResults, setSearchQuery, setSearchResults } = useAppStore();
   const { refresh, createMeeting, deleteMeeting } = useMeetings();
-  const setActiveMeeting = useAppStore((s) => s.setActiveMeeting);
+  const setActiveMeeting        = useAppStore((s) => s.setActiveMeeting);
+  const setPendingImportFile    = useAppStore((s) => s.setPendingImportFile);
   const [activeTag, setActiveTag]     = useState(null);
   const [selectedId, setSelectedId]   = useState(null);
   const [settingsOpen, setSettings]   = useState(false);
+  const [isDragOver, setIsDragOver]   = useState(false);
+  const fileInputRef                  = useRef(null);
 
   useEffect(() => { refresh(); }, []);
 
@@ -739,6 +742,23 @@ export function Library() {
     const meeting = await createMeeting({ title: 'New Meeting' });
     if (meeting) setActiveMeeting(meeting.id);
   };
+
+  const AUDIO_EXTS = /\.(wav|mp3|m4a|aac|flac|ogg|webm|mp4)$/i;
+
+  const handleImportFile = useCallback(async (file) => {
+    if (!file) return;
+    if (!file.type.startsWith('audio/') && !AUDIO_EXTS.test(file.name)) return;
+    const title = file.name.replace(/\.[^.]+$/, '');
+    setPendingImportFile(file);
+    const meeting = await createMeeting({ title });
+    if (meeting) setActiveMeeting(meeting.id);
+  }, [createMeeting, setActiveMeeting, setPendingImportFile]);
+
+  // Listen for File > Import Audio… menu trigger
+  useEffect(() => {
+    window.api?.onTriggerFileImport?.(() => fileInputRef.current?.click());
+    return () => window.api?.offTriggerFileImport?.();
+  }, []);
 
   const handleDelete = async (id) => {
     if (!window.confirm('Delete this meeting and all its data?')) return;
@@ -782,7 +802,35 @@ export function Library() {
   const groups = groupMeetingsByDate(filteredMeetings);
 
   return (
-    <div className="flex h-full" style={{ background: 'var(--bg-page)' }}>
+    <div
+      className="flex h-full relative"
+      style={{ background: 'var(--bg-page)' }}
+      onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setIsDragOver(false); }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsDragOver(false);
+        const file = e.dataTransfer?.files?.[0];
+        if (file) handleImportFile(file);
+      }}
+    >
+      {/* Hidden file input for button + menu trigger */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg,.webm,.mp4"
+        style={{ display: 'none' }}
+        onChange={(e) => { handleImportFile(e.target.files?.[0]); e.target.value = ''; }}
+      />
+
+      {/* Drag-over overlay */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center pointer-events-none"
+          style={{ background: 'rgba(92,110,0,0.08)', border: '2px dashed #5c6e00', borderRadius: 12 }}>
+          <Upload size={28} className="text-[#5c6e00] mb-2" />
+          <p className="text-[14px] font-semibold text-[#5c6e00]">Drop audio file to import</p>
+        </div>
+      )}
 
       {/* ── Left sidebar ── */}
       <div className="flex-shrink-0" style={{ width: 232 }}>
@@ -814,6 +862,15 @@ export function Library() {
             {activeTag ? <span className="capitalize">{activeTag}</span> : 'Notes'}
           </h1>
           <div className="no-drag flex items-center gap-2 pb-0.5">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={{ padding: '8px 16px', fontSize: 13, fontWeight: 500, borderRadius: 999, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--ink-faint)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 7, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', transition: 'background 0.15s' }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-surface2)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'var(--bg-elevated)'}
+              title="Import an audio file to transcribe (⌘O)"
+            >
+              <Upload size={13} /> Import
+            </button>
             <button
               onClick={async () => {
                 const meeting = await createMeeting({ title: 'New Note' });

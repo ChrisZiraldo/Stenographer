@@ -240,6 +240,15 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
   editorRef.current = editor;
   if (externalEditorRef) externalEditorRef.current = editor;
 
+  // Clear the external ref when this component unmounts so callers
+  // don't try to call methods on a destroyed TipTap editor instance.
+  useEffect(() => {
+    return () => {
+      if (externalEditorRef) externalEditorRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Slash command detection on text changes
   useEffect(() => {
     if (!editor) return;

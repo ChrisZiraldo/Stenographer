@@ -1,17 +1,19 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 // ── Streaming chunk handlers ──────────────────────────────────────────────────
-let _notesChunkCb      = null;
-let _summaryChunkCb    = null;
-let _mergeChunkCb      = null;
-let _aiCommandChunkCb  = null;
-let _devNavigateCb     = null;
+let _notesChunkCb        = null;
+let _summaryChunkCb      = null;
+let _mergeChunkCb        = null;
+let _aiCommandChunkCb    = null;
+let _devNavigateCb       = null;
+let _triggerFileImportCb = null;
 
-ipcRenderer.on('notes-chunk',       (_e, text)    => _notesChunkCb?.(text));
-ipcRenderer.on('summary-chunk',     (_e, text)    => _summaryChunkCb?.(text));
-ipcRenderer.on('merge-chunk',       (_e, text)    => _mergeChunkCb?.(text));
-ipcRenderer.on('ai-command-chunk',  (_e, text)    => _aiCommandChunkCb?.(text));
-ipcRenderer.on('dev:navigate',      (_e, payload) => _devNavigateCb?.(payload));
+ipcRenderer.on('notes-chunk',          (_e, text)    => _notesChunkCb?.(text));
+ipcRenderer.on('summary-chunk',        (_e, text)    => _summaryChunkCb?.(text));
+ipcRenderer.on('merge-chunk',          (_e, text)    => _mergeChunkCb?.(text));
+ipcRenderer.on('ai-command-chunk',     (_e, text)    => _aiCommandChunkCb?.(text));
+ipcRenderer.on('dev:navigate',         (_e, payload) => _devNavigateCb?.(payload));
+ipcRenderer.on('trigger-file-import',  ()            => _triggerFileImportCb?.());
 
 contextBridge.exposeInMainWorld('api', {
   // ── File I/O ───────────────────────────────────────────────────────────────
@@ -39,6 +41,10 @@ contextBridge.exposeInMainWorld('api', {
   // ── Dev navigation (dev-only, mouse-free screen switching) ─────────────────
   onDevNavigate:  (cb) => { _devNavigateCb = cb; },
   offDevNavigate: ()   => { _devNavigateCb = null; },
+
+  // ── File import (triggered by File menu or import button) ─────────────────
+  onTriggerFileImport:  (cb) => { _triggerFileImportCb = cb; },
+  offTriggerFileImport: ()   => { _triggerFileImportCb = null; },
 
   // ── Database (all synchronous ops over IPC) ────────────────────────────────
   db: {

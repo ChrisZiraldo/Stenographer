@@ -25,6 +25,7 @@ export const useAppStore = create((set, get) => ({
   isGenerating: false,
   generatedNotes: '',
   notesView: 'human',        // 'human' | 'generated'
+  pendingImportFile: null,   // File object waiting to be transcribed in Workspace
 
   // ── Device settings ────────────────────────────────────────────────────────
   devices: [],
@@ -74,9 +75,11 @@ export const useAppStore = create((set, get) => ({
   setRightTab:      (t) => set({ rightTab: t }),
   toggleRightPane:  () => set((s) => ({ rightPaneOpen: !s.rightPaneOpen })),
 
-  setIsGenerating:  (b) => set({ isGenerating: b }),
-  setGeneratedNotes:(n) => set({ generatedNotes: n }),
-  setNotesView:    (v) => set({ notesView: v }),
+  setIsGenerating:      (b) => set({ isGenerating: b }),
+  setGeneratedNotes:    (n) => set({ generatedNotes: n }),
+  setNotesView:         (v) => set({ notesView: v }),
+  setPendingImportFile: (f) => set({ pendingImportFile: f }),
+  clearPendingImportFile: () => set({ pendingImportFile: null }),
 
   setDevices:          (d) => set({ devices: d }),
   setInputDeviceId:    (id) => set({ inputDeviceId: id }),
@@ -105,5 +108,6 @@ export const useAppStore = create((set, get) => ({
     isGenerating: false,
     generatedNotes: '',
     notesView: 'human',
+    pendingImportFile: null,
   }),
 }));

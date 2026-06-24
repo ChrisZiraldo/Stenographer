@@ -212,6 +212,8 @@ export function Workspace() {
     generatedNotes, setGeneratedNotes,
     resetWorkspaceState,
     liveSegments, setLiveSegments, setLiveTranscript, setLiveSummary,
+    pendingImportFile, clearPendingImportFile,
+    setRecordingStatus, setStatusMessage,
   } = useAppStore();
 
   const [meeting, setMeeting]       = useState(null);
@@ -256,6 +258,37 @@ export function Workspace() {
     if (!audioRef.current || !meeting?.audio_path) return;
     audioRef.current.src = `file://${meeting.audio_path}`;
   }, [meeting?.audio_path]);
+
+  // ── File import pipeline ──
+  useEffect(() => {
+    if (!pendingImportFile || !activeMeetingId) return;
+
+    const file = pendingImportFile;
+    clearPendingImportFile();
+
+    // Clear any stale transcript state from a previous session
+    recorder.currentTranscript = '';
+    setLiveSegments([]);
+    setLiveTranscript('');
+
+    recorder.transcribeFile(file)
+      .then(async () => {
+        const { liveSegments: segs } = useAppStore.getState();
+        if (segs.length) {
+          await window.api.db.upsertSegments(activeMeetingId,
+            segs.map((s) => ({ text: s.text, speaker: s.speaker ?? null, createdAt: s.timestamp ?? Date.now() }))
+          );
+        }
+        await window.api.db.updateMeeting(activeMeetingId, { status: 'done', ended_at: Date.now() });
+        setRecordingStatus('paused');
+        setStatusMessage('Import complete — hit Generate to create meeting notes');
+      })
+      .catch((err) => {
+        console.error('[Import] Failed:', err);
+        setRecordingStatus('error');
+        setStatusMessage('Import failed — ' + err.message);
+      });
+  }, [pendingImportFile, activeMeetingId]);
 
   // ── Recording toggle ──
 
@@ -342,7 +375,7 @@ export function Workspace() {
     try {
       const res = await window.api.generateMerge({ humanNotesText: humanText, transcriptText, meetingId: activeMeetingId });
       if (res.ok) {
-        if (!meeting?.title || meeting.title === 'New Meeting' || meeting.title === 'Untitled Meeting') {
+        if (!meeting?.title || meeting.title === 'New Meeting' || meeting.title === 'Untitled Meeting' || meeting.title === 'New Note') {
           const titleRes = await window.api.generateTitle({ transcriptText, notesText: humanText, meetingId: activeMeetingId });
           if (titleRes?.title) setMeeting((m) => m ? { ...m, title: titleRes.title } : m);
         }
@@ -418,14 +451,29 @@ export function Workspace() {
         style={{ paddingLeft: 88, paddingRight: 16, paddingTop: 10, paddingBottom: 10 }}>
         <button
           onClick={async () => {
-            const editorText = editorInstanceRef.current?.getText?.() ?? '';
+            // Guard: editor ref is nulled on unmount (generated tab) or may point to
+            // a destroyed TipTap instance. getText() on a destroyed editor throws
+            // because TipTap v3 nulls editor.schema in destroy().
+            const editorText = (() => {
+              try {
+                const ed = editorInstanceRef.current;
+                if (!ed || ed.isDestroyed) return '';
+                return ed.getText?.() ?? '';
+              } catch {
+                return '';
+              }
+            })();
             const isBlank =
               (!meeting?.title || meeting.title === 'New Note') &&
               liveSegments.length === 0 &&
-              !meeting?.enhanced_notes &&
+              !generatedNotes &&
               editorText.trim() === '';
-            if (isBlank && activeMeetingId) {
-              await window.api.db.deleteMeeting(activeMeetingId);
+            try {
+              if (isBlank && activeMeetingId) {
+                await window.api.db.deleteMeeting(activeMeetingId);
+              }
+            } catch {
+              // Deletion failure should never block navigation
             }
             setView('library');
             resetWorkspaceState();
