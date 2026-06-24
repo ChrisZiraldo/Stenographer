@@ -2,10 +2,12 @@ import { Mic, ChevronDown } from 'lucide-react';
 import { useAppStore } from '../store/appStore.js';
 
 export function DeviceMenu({ onOpenSettings }) {
-  const { devices, inputDeviceId } = useAppStore();
-  const inputs = devices.filter((d) => d.kind === 'audioinput');
-  const inputLabel = inputs.find((d) => d.deviceId === inputDeviceId)?.label || 'Audio source';
-  const shortLabel = inputLabel.length > 18 ? inputLabel.slice(0, 18) + '…' : inputLabel;
+  const { loopbackEnabled, micEnabled } = useAppStore();
+
+  let label = 'No audio source';
+  if (loopbackEnabled && micEnabled) label = 'Call + Mic';
+  else if (loopbackEnabled)          label = 'Call audio';
+  else if (micEnabled)               label = 'Microphone';
 
   return (
     <button
@@ -14,7 +16,7 @@ export function DeviceMenu({ onOpenSettings }) {
       title="Audio settings"
     >
       <Mic size={11} />
-      <span className="max-w-[90px] truncate">{shortLabel}</span>
+      <span className="max-w-[90px] truncate">{label}</span>
       <ChevronDown size={9} className="opacity-50" />
     </button>
   );

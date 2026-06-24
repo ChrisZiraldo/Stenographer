@@ -153,8 +153,15 @@ function FormatToolbar({ editor, onTemplate }) {
 export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange, editorRef: externalEditorRef, onTemplate }) {
   const [slashMenu, setSlashMenu] = useState(null); // { query, items, pos, selectedIndex }
   const [isAiRunning, setIsAiRunning] = useState(false);
-  const debounceRef = useRef(null);
-  const editorRef = useRef(null);
+  const debounceRef    = useRef(null);
+  const editorRef      = useRef(null);
+  // Keep meetingId and slash state in refs so debounced/handler callbacks
+  // always read the current value without capturing stale closures.
+  const meetingIdRef          = useRef(meetingId);
+  const slashMenuRef          = useRef(null);
+  const handleSelectSlashRef  = useRef(null);
+  meetingIdRef.current = meetingId;
+  slashMenuRef.current = slashMenu;
 
   const handleAiCommand = useCallback(async (commandId, editor) => {
     setIsAiRunning(true);
@@ -170,8 +177,8 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
 
     try {
       const res = await window.api.aiCommand({ prompt: buildSlashPrompt(commandId, selectedText) });
-      if (res.ok && accumulated) {
-        // Insert AI result as new paragraph after cursor
+      // Guard: editor may have been destroyed while awaiting [C7]
+      if (res.ok && accumulated && !editor.isDestroyed) {
         editor.chain().focus().insertContent(`\n\n${accumulated}\n\n`).run();
       }
     } finally {
@@ -196,26 +203,32 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
       const json = editor.getJSON();
       const text = editor.getText();
 
-      // Autosave (debounced 800ms)
+      // Snapshot meetingId at schedule time so the debounce always writes to the
+      // correct meeting even if meetingId changes before the timeout fires. [C1]
+      const mid = meetingIdRef.current;
+
       clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
-        if (meetingId) {
-          window.api.db.saveNoteDoc(meetingId, {
+        if (mid) {
+          window.api.db.saveNoteDoc(mid, {
             humanDocJson: JSON.stringify(json),
             humanDocText: text,
-          });
+          }).catch((err) => console.warn('[NotesEditor] saveNoteDoc failed:', err.message)); // [C5]
         }
         onDocChange?.({ json, text });
 
         // Sync task items → todos
         const tasks = extractTasks(json);
         onTodosChange?.(tasks);
-        syncTodosToDb(meetingId, tasks);
+        syncTodosToDb(mid, tasks);
       }, 800);
     },
     editorProps: {
+      // Use refs so this handler always sees current slashMenu/handleSelectSlash state
+      // without needing to be recreated when those values change.
       handleKeyDown: (view, event) => {
-        if (slashMenu) {
+        const menu = slashMenuRef.current;
+        if (menu) {
           if (event.key === 'ArrowDown') {
             setSlashMenu((m) => m && ({ ...m, selectedIndex: (m.selectedIndex + 1) % m.items.length }));
             return true;
@@ -225,8 +238,8 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
             return true;
           }
           if (event.key === 'Enter') {
-            if (slashMenu.items[slashMenu.selectedIndex]) {
-              handleSelectSlash(slashMenu.items[slashMenu.selectedIndex]);
+            if (menu.items[menu.selectedIndex]) {
+              handleSelectSlashRef.current?.(menu.items[menu.selectedIndex]);
             }
             return true;
           }
@@ -249,6 +262,44 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // When meetingId changes, flush any pending save for the leaving meeting so the
+  // last keystrokes are not lost. Capture meetingId in the effect body so the cleanup
+  // still has access to the old id after meetingIdRef updates on the new render. [C2]
+  useEffect(() => {
+    const capturedMid = meetingId;
+    return () => {
+      clearTimeout(debounceRef.current);
+      const ed = editorRef.current;
+      if (ed && !ed.isDestroyed && capturedMid) {
+        const json = ed.getJSON();
+        const text = ed.getText();
+        void window.api.db.saveNoteDoc(capturedMid, {
+          humanDocJson: JSON.stringify(json),
+          humanDocText: text,
+        }).catch((err) => console.warn('[NotesEditor] flush saveNoteDoc failed:', err.message));
+        void syncTodosToDb(capturedMid, extractTasks(json));
+      }
+    };
+  }, [meetingId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Also flush on unmount (e.g. user navigates back to library) [C2]
+  useEffect(() => {
+    return () => {
+      clearTimeout(debounceRef.current);
+      const ed = editorRef.current;
+      const mid = meetingIdRef.current;
+      if (ed && !ed.isDestroyed && mid) {
+        const json = ed.getJSON();
+        const text = ed.getText();
+        void window.api.db.saveNoteDoc(mid, {
+          humanDocJson: JSON.stringify(json),
+          humanDocText: text,
+        }).catch((err) => console.warn('[NotesEditor] unmount flush failed:', err.message));
+        void syncTodosToDb(mid, extractTasks(json));
+      }
+    };
+  }, []);
+
   // Slash command detection on text changes
   useEffect(() => {
     if (!editor) return;
@@ -256,7 +307,7 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
       const { state } = editor;
       const { from } = state.selection;
       const textBefore = state.doc.textBetween(Math.max(0, from - 30), from, '\n', '\0');
-      const match = textBefore.match(/\/(\w*)$/);
+      const match = textBefore.match(/\/([\w-]*)$/);
 
       if (match) {
         const query = match[1].toLowerCase();
@@ -280,11 +331,11 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
     if (!editor) return;
     setSlashMenu(null);
 
-    // Delete the /command text
+    // Delete the /command text (support hyphenated commands like /action-items)
     const { state } = editor;
     const { from } = state.selection;
     const textBefore = state.doc.textBetween(Math.max(0, from - 30), from, '\n', '\0');
-    const match = textBefore.match(/\/(\w*)$/);
+    const match = textBefore.match(/\/([\w-]*)$/);
     if (match) {
       editor.chain().focus().deleteRange({ from: from - match[0].length, to: from }).run();
     }
@@ -296,17 +347,30 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
     }
   }, [editor, handleAiCommand]);
 
-  // Load initial doc when meetingId or initialDoc changes (initialDoc arrives async after DB load)
+  // Keep the ref in sync so the editor's handleKeyDown can call the current callback
+  handleSelectSlashRef.current = handleSelectSlash;
+
+  // Load initial doc when meetingId or initialDoc changes (initialDoc arrives async after DB load).
+  // Also depends on `editor` so it runs once the editor is ready.
   useEffect(() => {
-    if (!editor || !initialDoc || initialDoc === '{}') return;
+    if (!editor) return;
+    if (!initialDoc || initialDoc === '{}') {
+      // On meeting switch with empty doc, explicitly clear the editor
+      editor.commands.clearContent(false);
+      return;
+    }
     try {
       const parsed = JSON.parse(initialDoc);
       if (parsed?.type === 'doc') {
-        // setContent with emitUpdate=false so autosave isn't triggered by the load
-        editor.commands.setContent(parsed, false);
+        // TipTap v3 setContent uses an options object, not a bare boolean
+        editor.commands.setContent(parsed, { emitUpdate: false });
+      } else {
+        // Parsed but not a doc node — clear so stale content doesn't bleed through [C4]
+        editor.commands.clearContent(false);
       }
     } catch { /* raw text — leave as-is */ }
-  }, [meetingId, initialDoc]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetingId, initialDoc, editor]);
 
   return (
     <div className="relative h-full flex flex-col">
@@ -341,11 +405,19 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
 
 function extractTasks(doc) {
   const tasks = [];
+
+  // Recursively collect all text from a node tree (handles taskItem > paragraph > text)
+  function getTextContent(node) {
+    if (node.type === 'text') return node.text ?? '';
+    return (node.content ?? []).map(getTextContent).join('');
+  }
+
   function walk(node) {
     if (node.type === 'taskItem') {
-      const text = node.content?.map((n) => n.text ?? '').join('') ?? '';
-      if (text.trim()) tasks.push({ text: text.trim(), done: node.attrs?.checked ?? false });
+      const text = getTextContent(node).trim();
+      if (text) tasks.push({ text, done: node.attrs?.checked ?? false });
     }
+    // Continue walking to find nested taskItems (TipTap supports nested task lists)
     node.content?.forEach(walk);
   }
   doc?.content?.forEach(walk);
@@ -355,24 +427,13 @@ function extractTasks(doc) {
 async function syncTodosToDb(meetingId, tasks) {
   if (!meetingId) return;
   try {
-    // Get existing AI/human todos from DB to avoid overwriting AI-created ones
-    const existing = await window.api.db.listTodos({ meetingId });
-    const humanExisting = existing.filter((t) => t.source === 'human');
-
-    // Upsert tasks from editor (by position — simplistic sync)
-    for (let i = 0; i < tasks.length; i++) {
-      const task = tasks[i];
-      const match = humanExisting[i];
-      await window.api.db.upsertTodo({
-        id: match?.id,
-        meetingId,
-        text: task.text,
-        done: task.done,
-        source: 'human',
-        position: i,
-      });
-    }
-  } catch { /* ignore sync errors */ }
+    // Replace-all semantics: delete human todos then re-insert from editor order.
+    // This handles reordering, deletion, and unchecking correctly without orphans.
+    // AI-sourced todos are left untouched by replaceHumanTodos.
+    await window.api.db.replaceHumanTodos(meetingId, tasks);
+  } catch (err) {
+    console.warn('[NotesEditor] syncTodosToDb failed:', err.message);
+  }
 }
 
 function buildSlashPrompt(command, selectedText) {

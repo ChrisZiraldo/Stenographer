@@ -27,8 +27,9 @@ Powered by **Parakeet TDT V3** (on-device speech recognition via WebGPU/WASM) an
 ### Recording & transcription
 - **Live VAD-driven subtitles** — energy-based voice-activity detection runs in an AudioWorklet; detected speech chunks are flushed to Parakeet for real-time captions
 - **Hybrid re-transcription** — full audio buffers are saved in memory during recording; when you hit Generate, a higher-quality full-context pass is run over the whole session, producing a much more accurate final transcript
-- **Dual-stream capture** — optionally capture both the call audio (via BlackHole) and your own microphone simultaneously, with each stream labelled separately (`[Me]`)
-- **Pass-through monitoring** — route BlackHole audio back to your speakers/headphones so you still hear the call while it's being captured
+- **Call audio capture** — toggle "Capture call audio" in Settings to tap system audio via the CoreAudio Tap API (macOS 14.2+) / Screen & System Audio Recording permission; no virtual audio device or Zoom settings changes needed
+- **Dual-stream capture** — enable both "Capture call audio" and "Use microphone" to capture call participants and your own voice simultaneously, with your voice labelled `[Me]`
+- **In-person recording** — with "Capture call audio" off, the microphone captures the whole room as a single unlabelled stream
 - **File import** — drag a `.wav / .mp3 / .m4a / .flac / .ogg / .webm` file onto the app to transcribe a recording after the fact
 - **WebGPU → WASM fallback** — if the GPU is out of memory, the model automatically retries with WASM (CPU) so transcription still works
 
@@ -54,31 +55,22 @@ Powered by **Parakeet TDT V3** (on-device speech recognition via WebGPU/WASM) an
 
 - macOS 13+ on Apple Silicon (M1–M4)
 - Node.js 18+
-- [BlackHole 2ch](https://existential.audio/blackhole/) — only needed for Zoom/app audio capture
 - Cursor API key from [cursor.com/dashboard/integrations](https://cursor.com/dashboard/integrations)
+
+> **Call audio capture** requires the *Screen & System Audio Recording* permission (macOS 13+). On macOS 14.2+ this is backed by the CoreAudio Tap API — no virtual audio device or Zoom changes needed. The OS will prompt for permission on first use.
 
 ---
 
 ## One-time setup
 
-### 1 · Install BlackHole (Zoom mode only)
-
-```bash
-brew install blackhole-2ch
-```
-
-In Zoom: `Settings → Audio → Speaker → BlackHole 2ch`
-
-The app handles pass-through monitoring internally so you still hear the call. No Aggregate Device or Multi-Output Device needed.
-
-### 2 · Configure your API key
+### 1 · Configure your API key
 
 ```bash
 cp .env.example .env
 # Edit .env and set CURSOR_API_KEY=cursor_...
 ```
 
-### 3 · Install and start
+### 2 · Install and start
 
 ```bash
 npm install
@@ -99,15 +91,22 @@ The first launch downloads the Parakeet V3 model weights (~350 MB) from Hugging 
 
 ### Recording a meeting
 
+**Remote call (Zoom, Teams, etc.)**
+
 1. Open a note (new or existing).
-2. Open **Settings** (gear icon in the top bar) and configure your audio devices:
-   - Set **Input** to BlackHole for Zoom, or your microphone for in-person.
-   - Enable **Pass-through** if capturing Zoom audio so you can still hear the call.
-   - Enable **Include my voice** to also capture and label your own microphone.
+2. Open **Settings** (gear icon in the top bar):
+   - Enable **Capture call audio** — the OS will prompt for *Screen & System Audio Recording* permission the first time. Zoom's speaker stays on your normal headphones/speakers.
+   - Enable **Use microphone** to also capture and label your own voice as `[Me]`.
 3. Hit **Record**. Live captions appear in the right pane (if Live Transcription is on).
 4. Keep taking notes in the left pane while the call is being captured.
 5. Hit **Record** again to stop.
 6. Hit **Generate** to run the AI merge of your notes + transcript.
+
+**In-person meeting**
+
+1. Open a note, then open Settings and disable **Capture call audio**.
+2. Enable **Use microphone** and select your microphone (built-in or external).
+3. Hit **Record** — all voices in the room are captured as a single stream.
 
 ### Dictation (personal notes)
 
@@ -140,11 +139,9 @@ Click the **star icon** on hover in the Library list, or the star in the note's 
 
 | Setting | Description |
 |---|---|
-| Input / BlackHole | The audio input device to record from |
-| Pass-through to speakers | Route the input back to your output device so you can hear it |
-| Output | Which speaker/headphone to send the pass-through to |
-| Include my voice | Open a second mic stream and label your voice `[Me]` |
-| My Mic | The microphone device for the second stream |
+| Capture call audio | Tap system audio via loopback — captures call participants without changing Zoom's speaker setting |
+| Use microphone | Open a microphone stream; labelled `[Me]` when call audio is also active, unlabelled for in-person |
+| Microphone | Which mic device to use (shown when Use microphone is on) |
 
 ### Processing
 
@@ -202,26 +199,26 @@ meetings_fts      — FTS5 virtual table for full-text search
 ```
 ┌─ Live recording ──────────────────────────────────────────────────────────────┐
 │                                                                                │
-│  Zoom / BlackHole ──► getUserMedia()                                           │
+│  Zoom (plays to speakers as normal)                                            │
+│    └──► getDisplayMedia({ audio: 'loopback' })  ← CoreAudio Tap / loopback   │
 │                              │                                                 │
-│                   ┌──────────┴──────────────────────┐                         │
-│                   │                                 │                         │
-│             AudioWorklet                    <audio> setSinkId                 │
-│          (16 kHz mono PCM)               → Your speakers (pass-through)       │
-│                   │                                                            │
-│          ┌────────┴─────────────────┐                                         │
-│          │                         │                                          │
-│     mainRecBuffer             Energy VAD (mainVAD)                            │
-│  (all frames saved)               │                                           │
-│                            Parakeet → live captions (right pane)              │
+│                        AudioWorklet                                            │
+│                      (16 kHz mono PCM)                                        │
+│                              │                                                 │
+│                   ┌──────────┴─────────────────┐                              │
+│                   │                            │                              │
+│             mainRecBuffer              Energy VAD (mainVAD)                   │
+│          (all frames saved)                    │                              │
+│                                   Parakeet → live captions (right pane)       │
 │                                                                                │
-│  MacBook Mic ──► getUserMedia()  (when "Include my voice" is on)              │
+│  MacBook Mic ──► getUserMedia()  (when "Use microphone" is on)                │
 │                       │                                                        │
 │            ┌──────────┴──────────────────────┐                                │
 │            │                                 │                                │
 │      myRecBuffer                    Energy VAD (myVAD, label="Me")            │
 │   (all frames saved)                         │                                │
-│                                       Parakeet → live captions               │
+│                            (label only applied when loopback also active)     │
+│                                       Parakeet → live captions                │
 └──────────────────────────────────────────────┬───────────────────────────────┘
                                                │  Generate pressed
                                                ▼
@@ -235,7 +232,8 @@ meetings_fts      — FTS5 virtual table for full-text search
 │                                       → chunks [ { text, timestamp, Me } ]    │
 │                                                                                │
 │  Merge & sort by timestamp ──► generated transcript                            │
-│  Mix PCM ──► encodeWav ──► recordings/<timestamp>/recording.wav               │
+│  Mix PCM ──► encodeWav ──► ~/Library/Application Support/Stenographer/        │
+│                             recordings/<timestamp>/recording.wav               │
 └──────────────────────────────────────────────┬───────────────────────────────┘
                                                │
                                     @cursor/sdk Agent.prompt
@@ -259,7 +257,7 @@ SPEAKING ──[ smoothedRMS < SILENCE_RMS
 
 Energy is tracked as an EMA of the per-frame RMS: `smoothedRMS = α × rms(frame) + (1 − α) × smoothedRMS`
 
-Each audio source (BlackHole stream, mic stream) gets its own independent VAD instance.
+Each audio source (loopback stream, mic stream) gets its own independent VAD instance.
 
 ### Transcription engine
 
@@ -276,8 +274,9 @@ Each audio source (BlackHole stream, mic stream) gets its own independent VAD in
 
 | Symptom | Fix |
 |---|---|
-| No transcript / silence | Zoom speaker must be set to BlackHole. Check `Zoom → Settings → Audio → Speaker`. |
-| Transcript only captures others, not me | Enable **Include my voice** in Settings and select your microphone. |
+| No transcript / silence (remote call) | Make sure **Capture call audio** is enabled in Settings and the *Screen & System Audio Recording* permission is granted: `System Settings → Privacy & Security → Screen & System Audio Recording → Stenographer`. |
+| Call audio capture denied error | Grant the permission above, then restart the app. |
+| Transcript only captures the call, not me | Enable **Use microphone** in Settings and select your microphone. |
 | `Microphone error` | Grant mic access: `System Settings → Privacy → Microphone → Stenographer` |
 | Model download stalls | Check network and retry. Cache lives in IndexedDB (DevTools → Application → IndexedDB). |
 | Notes not generated | Check `CURSOR_API_KEY` in `.env` — must start with `cursor_`. |

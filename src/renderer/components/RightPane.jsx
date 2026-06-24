@@ -92,13 +92,14 @@ function TranscriptPanel({ segments, audioRef, isRecording, onRemoveSegment }) {
   }, [segments, query]);
 
   const handleSegmentClick = (seg) => {
-    if (!audioRef?.current || !seg.startMs) return;
+    // seg.startMs may be 0 (valid), so use != null rather than falsy check
+    if (!audioRef?.current || seg.startMs == null) return;
     audioRef.current.currentTime = seg.startMs / 1000;
     audioRef.current.play().catch(() => {});
   };
 
   const handleCopyAll = () => {
-    const text = segments.map((s) => s.text).join('\n');
+    const text = segments.map((s) => s.text ?? '').join('\n');
     if (!text) return;
     navigator.clipboard.writeText(text);
     setCopyAllDone(true);
@@ -107,11 +108,11 @@ function TranscriptPanel({ segments, audioRef, isRecording, onRemoveSegment }) {
 
   const handleCopyChunk = (e, text) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(text ?? '');
   };
 
   const filtered = query.trim()
-    ? segments.filter((s) => s.text.toLowerCase().includes(query.toLowerCase()))
+    ? segments.filter((s) => (s.text ?? '').toLowerCase().includes(query.toLowerCase()))
     : segments;
 
   if (!segments.length) {
@@ -183,13 +184,13 @@ function TranscriptPanel({ segments, audioRef, isRecording, onRemoveSegment }) {
           <div
             key={seg.id}
             onClick={() => handleSegmentClick(seg)}
-            className={`animate-fade-in group relative rounded-[9px] py-2 px-2.5 -mx-0.5 ${seg.startMs ? 'hover:bg-[#f5f2e9] dark:hover:bg-[#333026] cursor-pointer' : ''}`}
+            className={`animate-fade-in group relative rounded-[9px] py-2 px-2.5 -mx-0.5 ${seg.startMs != null ? 'hover:bg-[#f5f2e9] dark:hover:bg-[#333026] cursor-pointer' : ''}`} /* [C8] */
           >
             {seg.speaker && (
               <div className="text-[10px] font-semibold text-[#5c6e00] uppercase tracking-wide mb-0.5">{seg.speaker}</div>
             )}
             <p className="text-[13px] text-[#2a2620] dark:text-[#c8c4bb] leading-relaxed pr-14">{seg.text}</p>
-            {seg.startMs && (
+            {seg.startMs != null && ( /* [C8] */
               <span className="text-[10px] text-[#c4bdb5] dark:text-[#5e5850] group-hover:text-[#9c9285] dark:group-hover:text-[#6b6358] transition-colors">
                 {(seg.startMs / 1000).toFixed(1)}s
               </span>
@@ -223,13 +224,17 @@ function TranscriptPanel({ segments, audioRef, isRecording, onRemoveSegment }) {
 // ── RightPane ─────────────────────────────────────────────────────────────────
 
 export function RightPane({ audioRef }) {
-  const {
-    rightTab, setRightTab,
-    liveSegments, liveSummary, summaryState,
-    recordingStatus,
-    removeLiveSegment,
-    liveTxEnabled, liveSummaryEnabled,
-  } = useAppStore();
+  // Use per-slice selectors to avoid re-rendering on every audioLevel/liveTranscript
+  // update that this component doesn't consume. [C10]
+  const rightTab         = useAppStore((s) => s.rightTab);
+  const setRightTab      = useAppStore((s) => s.setRightTab);
+  const liveSegments     = useAppStore((s) => s.liveSegments);
+  const liveSummary      = useAppStore((s) => s.liveSummary);
+  const summaryState     = useAppStore((s) => s.summaryState);
+  const recordingStatus  = useAppStore((s) => s.recordingStatus);
+  const removeLiveSegment = useAppStore((s) => s.removeLiveSegment);
+  const liveTxEnabled    = useAppStore((s) => s.liveTxEnabled);
+  const liveSummaryEnabled = useAppStore((s) => s.liveSummaryEnabled);
 
   // Keep active tab valid when settings change
   useEffect(() => {

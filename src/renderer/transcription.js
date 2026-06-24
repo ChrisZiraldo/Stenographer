@@ -17,6 +17,7 @@ const MODEL_KEY = 'parakeet-tdt-0.6b-v3';
 export class TranscriptionEngine {
   constructor() {
     this._model = null;
+    this._loadPromise = null;
   }
 
   get isLoaded() {
@@ -30,6 +31,15 @@ export class TranscriptionEngine {
    */
   async loadModel(onProgress) {
     if (this._model) return;
+    if (this._loadPromise) return this._loadPromise;
+    this._loadPromise = this._doLoadModel(onProgress).catch((err) => {
+      this._loadPromise = null; // allow retry
+      throw err;
+    });
+    return this._loadPromise;
+  }
+
+  async _doLoadModel(onProgress) {
 
     const hasWebGPU = typeof navigator !== 'undefined' && navigator.gpu != null;
     let backend = hasWebGPU ? 'webgpu' : 'wasm';
@@ -139,7 +149,7 @@ export class TranscriptionEngine {
 
     return {
       text:   _clean(result.text ?? ''),
-      chunks: result.chunks ?? [],
+      chunks: (result.chunks ?? []).map((c) => ({ ...c, text: _clean(c.text ?? '') })),
     };
   }
 }

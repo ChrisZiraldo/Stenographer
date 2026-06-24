@@ -16,10 +16,31 @@ export function useRecorder() {
   const setLiveSummary     = useAppStore((s) => s.setLiveSummary);
   const setSummaryState    = useAppStore((s) => s.setSummaryState);
 
+  // Read EQ values from store once at mount; these are module-level reads
+  // so we can apply them synchronously without re-render dependency issues.
+  const eqSensitivity = useAppStore.getState().eqSensitivity;
+  const eqReactivity  = useAppStore.getState().eqReactivity;
+  const eqMinSpeech   = useAppStore.getState().eqMinSpeech;
+  const eqSilence     = useAppStore.getState().eqSilence;
+
   useEffect(() => {
+    // Apply EQ defaults from the store to the recorder so values take effect
+    // before the user opens Settings. [C11]
+    recorder.SPEECH_RMS          = 0.040 - (eqSensitivity - 1) * (0.036 / 9);
+    recorder.SILENCE_RMS         = recorder.SPEECH_RMS * 0.65;
+    recorder.SMOOTH_ALPHA        = 0.05 + (eqReactivity - 1) * (0.35 / 9);
+    recorder.MIN_SPEECH_FRAMES   = Math.round(3 + (eqMinSpeech - 1) * (77 / 9));
+    recorder.SILENCE_HOLD_FRAMES = Math.round(10 + (eqSilence - 1) * (140 / 9));
+
     const onStatus = (msg, state) => {
       setStatusMessage(msg);
       setRecordingStatus(state);
+    };
+    // Preserve 'paused' state on non-fatal errors so the resume path stays accessible. [R19]
+    const onError = (msg) => {
+      setStatusMessage(msg);
+      const cur = useAppStore.getState().recordingStatus;
+      if (cur !== 'paused') setRecordingStatus('idle');
     };
     const onLevel        = (l)        => setAudioLevel(l);
     const onProgress     = (msg, pct) => setLoadingProgress(pct != null ? { message: msg, pct } : null);
@@ -29,6 +50,7 @@ export function useRecorder() {
     const onSummaryState = (s)        => setSummaryState(s);
 
     recorder.on('status',        onStatus);
+    recorder.on('error',         onError);
     recorder.on('level',         onLevel);
     recorder.on('progress',      onProgress);
     recorder.on('segment',       onSegment);
@@ -36,11 +58,16 @@ export function useRecorder() {
     recorder.on('summary-chunk', onSummaryChunk);
     recorder.on('summary-state', onSummaryState);
 
-    // Load the model once on mount
-    recorder.loadModel().catch(console.error);
+    // Load the model once on mount; surface failures to the store [C14]
+    recorder.loadModel().catch((err) => {
+      console.error('[useRecorder] loadModel failed:', err);
+      setStatusMessage(`Model load failed: ${err.message}`);
+      setRecordingStatus('error');
+    });
 
     return () => {
       recorder.off('status',        onStatus);
+      recorder.off('error',         onError);
       recorder.off('level',         onLevel);
       recorder.off('progress',      onProgress);
       recorder.off('segment',       onSegment);

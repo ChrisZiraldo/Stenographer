@@ -177,6 +177,11 @@ function Timer({ startedAt, isRunning }) {
   const [elapsed, setElapsed] = useState(0);
   const intervalRef = useRef(null);
 
+  // Reset elapsed counter when startedAt changes (new session). [W8]
+  useEffect(() => {
+    setElapsed(0);
+  }, [startedAt]);
+
   useEffect(() => {
     if (isRunning && startedAt) {
       intervalRef.current = setInterval(() => setElapsed(Date.now() - startedAt), 1000);
@@ -205,8 +210,8 @@ export function Workspace() {
     recordingStatus, statusMessage, loadingProgress,
     liveSummaryEnabled, summaryIntervalSecs,
     liveTxEnabled,
-    inputDeviceId, outputDeviceId, micDeviceId,
-    passthroughEnabled, captureMyVoice,
+    micDeviceId,
+    loopbackEnabled, micEnabled,
     notesView, setNotesView,
     isGenerating, setIsGenerating,
     generatedNotes, setGeneratedNotes,
@@ -229,30 +234,86 @@ export function Workspace() {
   const generatedRef                = useRef('');
   const summaryTimerRef             = useRef(null);
 
+  const liveHumanDocTextRef = useRef('');
+
   const loadMeeting = useCallback(async () => {
     if (!activeMeetingId) return;
-    const data = await window.api.db.getMeeting(activeMeetingId);
+    // Capture ID at call time; abort if the user has already switched meetings
+    // before any of the awaits below complete (stale-load guard).
+    const id = activeMeetingId;
+
+    // Determine whether we're switching to a *different* meeting while paused.
+    // If so, preserve the recorder session (buffers/transcript) for that meeting;
+    // otherwise reset it so we start with a clean slate.
+    const isSameMeeting = recorder.activeMeetingId === id;
+    const isActiveForThisMeeting = recorder.isRecording && isSameMeeting;
+    if (!isActiveForThisMeeting && !isSameMeeting) {
+      recorder.resetSession();
+    }
+
+    // Clear stale workspace state before populating from DB, so switching
+    // meetings doesn't flash the previous meeting's content.
+    setInitialDoc('{}');
+    setGeneratedNotes('');
+    generatedRef.current = '';
+    liveHumanDocTextRef.current = '';
+
+    const data = await window.api.db.getMeeting(id);
+    if (useAppStore.getState().activeMeetingId !== id) return;
+
+    // Guard: meeting was deleted externally (e.g. another tab) — go back to library. [W9]
+    if (!data) {
+      setView('library');
+      resetWorkspaceState();
+      return;
+    }
+
     setMeeting(data);
+    setStartedAt(data?.started_at ?? null);
+    liveHumanDocTextRef.current = data?.notes?.human_doc_text ?? '';
     if (data?.notes?.human_doc_json) setInitialDoc(data.notes.human_doc_json);
     if (data?.notes?.enhanced_md) {
       setGeneratedNotes(data.notes.enhanced_md);
       generatedRef.current = data.notes.enhanced_md;
     }
+    setLiveSummary(data?.notes?.summary_md ?? '');
 
-    // Restore saved transcript segments when the in-memory recorder buffer is gone
-    // (e.g. after navigating away and back, or after an app restart)
-    if (!recorder.currentTranscript && !recorder.mainRecBuffer?.length) {
-      const saved = await window.api.db.getSegments(activeMeetingId);
+    // Always restore persisted transcript segments from the DB, unless the
+    // recorder is actively recording this very meeting (live data takes precedence).
+    if (!isActiveForThisMeeting) {
+      const saved = await window.api.db.getSegments(id);
+      if (useAppStore.getState().activeMeetingId !== id) return;
       if (saved?.length) {
-        setLiveSegments(saved.map((s) => ({ id: s.id ?? (Date.now() + Math.random()), ...s })));
-        // Rebuild currentTranscript so the recorder-based canGenerate check also passes
+        setLiveSegments(saved.map((s) => ({
+          id: s.id,
+          text: s.text,
+          speaker: s.speaker ?? null,
+          startMs: s.start_ms ?? null,
+          endMs: s.end_ms ?? null,
+          createdAt: s.created_at,
+        })));
         recorder.currentTranscript = saved.map((s) => s.text).join(' ');
+      } else {
+        setLiveSegments([]);
       }
     }
-
   }, [activeMeetingId]);
 
   useEffect(() => { loadMeeting(); }, [loadMeeting]);
+
+  // Persist recorder segments on unmount so dev-navigation doesn't silently lose them. [W6]
+  useEffect(() => {
+    return () => {
+      const id = useAppStore.getState().activeMeetingId;
+      if (!id) return;
+      const { liveSegments: segs } = useAppStore.getState();
+      if (segs.length > 0) {
+        window.api.db.replaceSegments(id,
+          segs.map((s) => ({ id: s.id, text: s.text, speaker: s.speaker ?? null, startMs: s.startMs ?? null, endMs: s.endMs ?? null, createdAt: s.createdAt ?? Date.now() }))
+        ).catch((err) => console.warn('[Workspace] unmount replaceSegments failed:', err.message));
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!audioRef.current || !meeting?.audio_path) return;
@@ -264,6 +325,9 @@ export function Workspace() {
     if (!pendingImportFile || !activeMeetingId) return;
 
     const file = pendingImportFile;
+    // Capture meeting id at effect start so async writes target the correct meeting
+    // even if activeMeetingId changes while transcription is running. [W4]
+    const capturedMeetingId = activeMeetingId;
     clearPendingImportFile();
 
     // Clear any stale transcript state from a previous session
@@ -275,11 +339,11 @@ export function Workspace() {
       .then(async () => {
         const { liveSegments: segs } = useAppStore.getState();
         if (segs.length) {
-          await window.api.db.upsertSegments(activeMeetingId,
-            segs.map((s) => ({ text: s.text, speaker: s.speaker ?? null, createdAt: s.timestamp ?? Date.now() }))
+          await window.api.db.replaceSegments(capturedMeetingId,
+            segs.map((s) => ({ id: s.id, text: s.text, speaker: s.speaker ?? null, startMs: s.startMs ?? null, endMs: s.endMs ?? null, createdAt: s.createdAt ?? Date.now() }))
           );
         }
-        await window.api.db.updateMeeting(activeMeetingId, { status: 'done', ended_at: Date.now() });
+        await window.api.db.updateMeeting(capturedMeetingId, { status: 'done', ended_at: Date.now() });
         setRecordingStatus('paused');
         setStatusMessage('Import complete — hit Generate to create meeting notes');
       })
@@ -300,11 +364,11 @@ export function Workspace() {
       clearTimeout(summaryTimerRef.current);
       clearTimeout(recorder._summaryTimer);
       if (activeMeetingId) {
-        // Persist live segments to DB so they survive navigation / restarts
+        // Replace (not append) all segments so repeated pauses don't duplicate rows.
         const currentSegments = useAppStore.getState().liveSegments;
         if (currentSegments.length > 0) {
-          await window.api.db.upsertSegments(activeMeetingId,
-            currentSegments.map((s) => ({ text: s.text, speaker: s.speaker ?? null, createdAt: s.timestamp ?? Date.now() }))
+          await window.api.db.replaceSegments(activeMeetingId,
+            currentSegments.map((s) => ({ id: s.id, text: s.text, speaker: s.speaker ?? null, startMs: s.startMs ?? null, endMs: s.endMs ?? null, createdAt: s.createdAt ?? Date.now() }))
           );
         }
         await window.api.db.updateMeeting(activeMeetingId, {
@@ -320,8 +384,8 @@ export function Workspace() {
         setLiveSegments([]); setLiveTranscript(''); setLiveSummary('');
       }
       await recorder.start({
-        inputDeviceId, outputDeviceId: micDeviceId || outputDeviceId,
-        captureMyVoice, liveTx: liveTxEnabled, passthroughOn: passthroughEnabled,
+        loopbackEnabled, micEnabled, micDeviceId, liveTx: liveTxEnabled,
+        meetingId: activeMeetingId,
       });
       const now = Date.now();
       if (!isResume) setStartedAt(now);
@@ -334,47 +398,66 @@ export function Workspace() {
         recorder.scheduleRollingSummary({ intervalSecs: summaryIntervalSecs, meetingId: activeMeetingId });
       }
     }
-  }, [activeMeetingId, inputDeviceId, outputDeviceId, micDeviceId, captureMyVoice,
-      liveTxEnabled, passthroughEnabled, liveSummaryEnabled, summaryIntervalSecs, startedAt]);
+  }, [activeMeetingId, loopbackEnabled, micEnabled, micDeviceId,
+      liveTxEnabled, liveSummaryEnabled, summaryIntervalSecs, startedAt]);
 
   // ── Generate ──
 
   const handleGenerate = useCallback(async () => {
     if (!activeMeetingId) return;
-    setIsGenerating(true);
     setNotesView('generated');
-
-    if (recorder.mainRecBuffer.length > 0) {
-      // Full re-transcription from raw audio buffer
-      await recorder.enhanceTranscript();
-      if (recorder.currentTranscript) {
-        await window.api.db.upsertSegments(activeMeetingId, [{
-          text: recorder.currentTranscript, speaker: null, createdAt: Date.now(),
-        }]);
-      }
-    } else if (liveSegments.length > 0 && !recorder.currentTranscript) {
-      // Restore currentTranscript from in-memory live segments (survived navigation via loadMeeting)
-      recorder.currentTranscript = liveSegments.map((s) => s.text).join(' ');
-    }
-
-    const meetingData    = await window.api.db.getMeeting(activeMeetingId);
-    const humanText      = meetingData?.notes?.human_doc_text ?? '';
-    // Use in-memory transcript, then fall back to DB-persisted segments
-    const savedSegments  = recorder.currentTranscript ? [] : await window.api.db.getSegments(activeMeetingId);
-    const transcriptText = recorder.currentTranscript ||
-      liveSegments.map((s) => s.text).join(' ') ||
-      savedSegments.map((s) => s.text).join(' ');
-
-    generatedRef.current = '';
-    setGeneratedNotes('');
-    window.api.onMergeChunk((chunk) => {
-      generatedRef.current += chunk;
-      setGeneratedNotes(generatedRef.current);
-    });
+    setIsGenerating(true);
 
     try {
+      if (recorder.mainRecBuffer.length > 0) {
+        // Full re-transcription from raw audio buffer; result is a list of timed chunks.
+        const chunks = await recorder.enhanceTranscript();
+        if (recorder.currentTranscript) {
+          const segRows = Array.isArray(chunks) && chunks.length
+            ? chunks.map((c) => ({
+                text: c.text.trim(),
+                speaker: c.speaker ?? null,
+                startMs: c.timestamp?.[0] != null ? Math.round(c.timestamp[0] * 1000) : null,
+                endMs:   c.timestamp?.[1] != null ? Math.round(c.timestamp[1] * 1000) : null,
+                createdAt: Date.now(),
+              }))
+            : [{ text: recorder.currentTranscript, speaker: null, createdAt: Date.now() }];
+          await window.api.db.replaceSegments(activeMeetingId, segRows);
+        }
+      } else if (liveSegments.length > 0 && !recorder.currentTranscript) {
+        recorder.currentTranscript = liveSegments.map((s) => s.text).join(' ');
+      }
+
+      const meetingData    = await window.api.db.getMeeting(activeMeetingId);
+      // Read human notes from the live editor so debounce lag doesn't cause
+      // generate to use stale/empty notes text. [W2]
+      const humanText = (() => {
+        const ed = editorInstanceRef.current;
+        if (ed && !ed.isDestroyed) return ed.getText();
+        return liveHumanDocTextRef.current || (meetingData?.notes?.human_doc_text ?? '');
+      })();
+      const savedSegments  = recorder.currentTranscript ? [] : await window.api.db.getSegments(activeMeetingId);
+      const transcriptText = recorder.currentTranscript ||
+        liveSegments.map((s) => s.text).join(' ') ||
+        savedSegments.map((s) => s.text).join(' ');
+
+      // Snapshot so we can restore if generate fails (don't lose previous good output). [W3]
+      const prevGenerated = generatedRef.current;
+      generatedRef.current = '';
+      setGeneratedNotes('');
+      window.api.onMergeChunk((chunk) => {
+        generatedRef.current += chunk;
+        setGeneratedNotes(generatedRef.current);
+      });
+
       const res = await window.api.generateMerge({ humanNotesText: humanText, transcriptText, meetingId: activeMeetingId });
-      if (res.ok) {
+      if (!res.ok) {
+        // Restore previous generated notes so user doesn't lose the last good output. [W3]
+        generatedRef.current = prevGenerated;
+        setGeneratedNotes(prevGenerated);
+        setStatusMessage(`Generate failed: ${res.error ?? 'Unknown error'}`);
+        setRecordingStatus('paused');
+      } else {
         if (!meeting?.title || meeting.title === 'New Meeting' || meeting.title === 'Untitled Meeting' || meeting.title === 'New Note') {
           const titleRes = await window.api.generateTitle({ transcriptText, notesText: humanText, meetingId: activeMeetingId });
           if (titleRes?.title) setMeeting((m) => m ? { ...m, title: titleRes.title } : m);
@@ -390,6 +473,11 @@ export function Workspace() {
         }
         loadMeeting();
       }
+    } catch (err) {
+      // Surface unexpected errors so the user knows generate failed. [W5]
+      console.error('[Generate] unexpected error:', err);
+      setStatusMessage(`Generate failed: ${err.message}`);
+      setRecordingStatus('paused');
     } finally {
       window.api.offMergeChunk();
       setIsGenerating(false);
@@ -404,6 +492,11 @@ export function Workspace() {
     if (!activeMeetingId || !meeting?.title) return;
     await window.api.db.updateMeeting(activeMeetingId, { title: meeting.title });
   }, [activeMeetingId, meeting?.title]);
+
+  // Track live editor text so isBlank and handleGenerate always see current content [W1,W2]
+  const handleDocChange = useCallback(({ text }) => {
+    liveHumanDocTextRef.current = text;
+  }, []);
 
   const handleTemplate = useCallback((doc) => {
     editorInstanceRef.current?.commands.setContent(doc);
@@ -451,9 +544,28 @@ export function Workspace() {
         style={{ paddingLeft: 88, paddingRight: 16, paddingTop: 10, paddingBottom: 10 }}>
         <button
           onClick={async () => {
+            // If actively recording, pause + persist so no data is lost.
+            if (recorder.isRecording) {
+              await recorder.pause();
+              const currentSegments = useAppStore.getState().liveSegments;
+              if (activeMeetingId) {
+                if (currentSegments.length > 0) {
+                  await window.api.db.replaceSegments(activeMeetingId,
+                    currentSegments.map((s) => ({ id: s.id, text: s.text, speaker: s.speaker ?? null, startMs: s.startMs ?? null, endMs: s.endMs ?? null, createdAt: s.createdAt ?? Date.now() }))
+                  );
+                }
+                await window.api.db.updateMeeting(activeMeetingId, {
+                  status: 'paused',
+                  ended_at: Date.now(),
+                  duration_ms: startedAt ? Date.now() - startedAt : null,
+                });
+              }
+            }
+
             // Guard: editor ref is nulled on unmount (generated tab) or may point to
             // a destroyed TipTap instance. getText() on a destroyed editor throws
             // because TipTap v3 nulls editor.schema in destroy().
+            // Only auto-delete if the meeting is fully loaded and truly blank.
             const editorText = (() => {
               try {
                 const ed = editorInstanceRef.current;
@@ -463,10 +575,22 @@ export function Workspace() {
                 return '';
               }
             })();
+            // Keep in sync with NEW_NOTE_TITLE in Library.jsx [W16]
+            const BLANK_TITLES = ['New Note', 'New Meeting', 'Untitled Meeting', ''];
             const isBlank =
-              (!meeting?.title || meeting.title === 'New Note') &&
+              meeting != null &&
+              BLANK_TITLES.includes(meeting.title ?? '') &&
+              // Use live editor text and liveHumanDocTextRef (updated by onDocChange) as
+              // the source of truth for "has the user typed anything" — the meeting state
+              // object is stale (autosave updates DB but not React state). [W1]
+              !liveHumanDocTextRef.current?.trim() &&
+              !meeting.notes?.human_doc_text?.trim() &&
+              !meeting.notes?.enhanced_md &&
+              !meeting.audio_path &&
+              !meeting.folder_path &&
               liveSegments.length === 0 &&
               !generatedNotes &&
+              !recorder.currentTranscript?.trim() && // [W7] in-progress transcription isn't blank
               editorText.trim() === '';
             try {
               if (isBlank && activeMeetingId) {
@@ -477,6 +601,7 @@ export function Workspace() {
             }
             setView('library');
             resetWorkspaceState();
+            recorder.resetSession();
           }}
           className="btn-icon no-drag"
           aria-label="Back"
@@ -622,20 +747,21 @@ export function Workspace() {
 
           {/* Notes content */}
           <div className="flex-1 overflow-y-auto min-h-0 flex flex-col bg-[#faf8f2] dark:bg-[#201d16] relative">
-            {notesView === 'human' ? (
-              <div className="flex-1 px-3 pt-3 pb-16 min-h-0 flex flex-col">
-                <NotesEditor
-                  meetingId={activeMeetingId}
-                  initialDoc={initialDoc}
-                  editorRef={editorInstanceRef}
-                  onTemplate={handleTemplate}
-                />
-              </div>
-            ) : (
-              <div className="flex-1 flex flex-col min-h-0">
-                <GeneratedNotesView md={generatedNotes} isStreaming={isGenerating} />
-              </div>
-            )}
+            {/* NotesEditor is always mounted (hidden on Generated tab) so the TipTap
+                instance is never destroyed on tab switch — prevents stale-doc remount
+                and preserves editorInstanceRef for isBlank/handleGenerate. [C3] */}
+            <div className={`flex-1 px-3 pt-3 pb-16 min-h-0 flex flex-col${notesView !== 'human' ? ' hidden' : ''}`}>
+              <NotesEditor
+                meetingId={activeMeetingId}
+                initialDoc={initialDoc}
+                editorRef={editorInstanceRef}
+                onTemplate={handleTemplate}
+                onDocChange={handleDocChange}
+              />
+            </div>
+            <div className={`flex-1 flex flex-col min-h-0${notesView !== 'generated' ? ' hidden' : ''}`}>
+              <GeneratedNotesView md={generatedNotes} isStreaming={isGenerating} />
+            </div>
 
             {/* Floating dictation pill — inserts speech directly into the editor */}
             {notesView === 'human' && (

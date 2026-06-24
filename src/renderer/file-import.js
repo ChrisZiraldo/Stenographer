@@ -22,8 +22,12 @@ export async function decodeAudioFile(file, onProgress) {
 
   // Decode to whatever the native format is
   const tmpCtx = new AudioContext();
-  const decoded = await tmpCtx.decodeAudioData(arrayBuffer);
-  await tmpCtx.close();
+  let decoded;
+  try {
+    decoded = await tmpCtx.decodeAudioData(arrayBuffer);
+  } finally {
+    await tmpCtx.close();
+  }
   onProgress?.(50);
 
   // Resample and downmix to mono @ 16 kHz using OfflineAudioContext

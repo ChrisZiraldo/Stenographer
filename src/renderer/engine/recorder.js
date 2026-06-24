@@ -21,6 +21,8 @@ const SAMPLE_RATE       = 16000;
 const FRAME_MS          = 10;
 const FRAME_SAMPLES     = (SAMPLE_RATE * FRAME_MS) / 1000;  // 160
 const MAX_SPEECH_FRAMES = SAMPLE_RATE * 8 / FRAME_SAMPLES;  // 8 s hard flush
+// ~3 hours at 160 samples/frame, 100 fps → warn if recording grows unbounded. [R17]
+const MAX_REC_BUFFER_FRAMES = (SAMPLE_RATE * 3 * 3600) / FRAME_SAMPLES;
 
 export class Recorder {
   constructor() {
@@ -35,17 +37,17 @@ export class Recorder {
     this.SILENCE_HOLD_FRAMES = 60;
 
     // Audio graph
-    this._audioContext    = null;
-    this._mediaStream     = null;
-    this._workletNode     = null;
-    this._micStream       = null;
-    this._micWorklet      = null;
-    this._monitorAudio    = null;
-    this._passthroughStream = null;
+    this._audioContext = null;
+    this._mediaStream  = null;
+    this._workletNode  = null;
+    this._micStream    = null;
+    this._micWorklet   = null;
+    this._starting     = false; // [R15] true while start() is setting up audio graph
 
     // Session state
     this.isRecording      = false;
     this.sessionTimestamp = null;
+    this.activeMeetingId  = null;
 
     // Recording buffers
     this.mainRecBuffer    = [];
@@ -66,6 +68,13 @@ export class Recorder {
 
     // Typing animation serializer
     this._typeChain = Promise.resolve();
+
+    // Inference mutex: serialize all calls to engine.transcribeSegment / transcribeFileTimestamped
+    // so VAD flushes and dictation don't race on the model.
+    this._inferenceChain = Promise.resolve();
+
+    // Deduplication guard for loadModel (cleared on failure to allow retry)
+    this._loadModelPromise = null;
 
     // VAD instances
     this._mainVAD = this._createVAD(null);
@@ -91,9 +100,10 @@ export class Recorder {
   // ── Model loading ──────────────────────────────────────────────────────────
 
   async loadModel() {
+    if (this._loadModelPromise) return this._loadModelPromise;
     this._emit('status', 'Loading model…', 'loading');
     let maxPct = 0;
-    await this.engine.loadModel((msg, pct, totalBytes) => {
+    this._loadModelPromise = this.engine.loadModel((msg, pct, totalBytes) => {
       const BIG_FILE = 50 * 1024 * 1024;
       if (totalBytes > BIG_FILE && pct > maxPct) {
         maxPct = pct;
@@ -101,8 +111,15 @@ export class Recorder {
       } else {
         this._emit('progress', msg, null);
       }
+    }).then(() => {
+      this._emit('status', 'Ready', 'idle');
+    }).catch((err) => {
+      this._loadModelPromise = null; // allow retry
+      this._emit('error', `Model load failed: ${err.message}`);
+      this._emit('status', `Model load failed: ${err.message}`, 'idle');
+      throw err;
     });
-    this._emit('status', 'Ready — pick devices and hit Go', 'idle');
+    return this._loadModelPromise;
   }
 
   // ── Device enumeration ─────────────────────────────────────────────────────
@@ -120,7 +137,40 @@ export class Recorder {
 
   // ── Recording lifecycle ────────────────────────────────────────────────────
 
-  async start({ inputDeviceId, outputDeviceId, captureMyVoice, liveTx, passthroughOn }) {
+  /**
+   * Obtain system audio loopback via Electron's desktopCapturer.
+   * On macOS 14.2+ this is backed by the CoreAudio Tap API.
+   * The video track is stopped immediately — we only need the audio.
+   */
+  async _getLoopbackStream() {
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    stream.getVideoTracks().forEach((t) => t.stop());
+    if (stream.getAudioTracks().length === 0) {
+      throw new Error('No audio track in loopback stream — ensure system audio capture is permitted');
+    }
+    return stream;
+  }
+
+  /**
+   * @param {object} opts
+   * @param {boolean} opts.loopbackEnabled  – capture call/system audio via loopback
+   * @param {boolean} opts.micEnabled       – capture microphone
+   * @param {string}  opts.micDeviceId      – specific mic device (optional)
+   * @param {boolean} opts.liveTx           – emit live VAD segments
+   */
+  async start({ loopbackEnabled, micEnabled, micDeviceId, liveTx, meetingId }) {
+    // Re-entry guard: prevent double-start or starting while dictation is active
+    if (this.isRecording || this._audioContext || this._dictationStream || this._starting) return;
+    this._starting = true; // [R15] block pause() while setup is in progress
+
+    if (!loopbackEnabled && !micEnabled) {
+      this._starting = false;
+      this._emit('status', 'Enable at least one audio source in Settings.', 'error');
+      return;
+    }
+
+    if (meetingId) this.activeMeetingId = meetingId;
+
     if (!this.sessionTimestamp) {
       this.sessionTimestamp  = this._timestamp();
       this.currentTranscript = '';
@@ -129,50 +179,90 @@ export class Recorder {
     }
 
     this._emit('status', 'Starting…', 'loading');
-    this._mainVAD = this._createVAD(null);
-    this._myVAD   = this._createVAD('Me');
-    this._liveTx  = liveTx;
+    this._liveTx = liveTx;
 
+    // When both sources are active, label the mic stream [Me].
+    // When mic is the only source (in-person), speaker = null (no label).
+    const micSpeakerLabel = loopbackEnabled ? 'Me' : null;
+
+    this._mainVAD = this._createVAD(null);
+    this._myVAD   = this._createVAD(micSpeakerLabel);
+
+    // Wrap all audio-graph setup in try/catch so any failure nulls _audioContext
+    // and resets state — otherwise the re-entry guard bricks future start() calls. [R8]
     try {
-      this._mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: inputDeviceId ? { exact: inputDeviceId } : undefined,
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-      });
+      this._audioContext = new AudioContext();
+      if (this._audioContext.state !== 'running') {
+        await this._audioContext.resume();
+      }
+      await this._audioContext.audioWorklet.addModule(audioProcessorUrl);
     } catch (err) {
-      this._emit('status', `Microphone error: ${err.message}`, 'error');
+      this._starting = false;
+      await this._audioContext?.close().catch(() => {});
+      this._audioContext = null;
+      this._emit('status', `Audio setup failed: ${err.message}`, 'error');
       return;
     }
 
-    this._audioContext = new AudioContext();
-    await this._audioContext.audioWorklet.addModule(audioProcessorUrl);
+    // ── Main stream: loopback (remote call) or mic (in-person) ───────────────
+    if (loopbackEnabled) {
+      try {
+        this._mediaStream = await this._getLoopbackStream();
+      } catch (err) {
+        this._starting = false;
+        await this._audioContext.close();
+        this._audioContext = null;
+        this._emit('status',
+          'Call audio capture was denied. Enable "Screen & System Audio Recording" in System Settings → Privacy.',
+          'error'
+        );
+        return;
+      }
+    } else {
+      // Mic-only (in-person meeting) — route through the main pipeline
+      try {
+        this._mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: micDeviceId ? { exact: micDeviceId } : undefined,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+        });
+      } catch (err) {
+        this._starting = false;
+        await this._audioContext.close();
+        this._audioContext = null;
+        this._emit('status', `Microphone error: ${err.message}`, 'error');
+        return;
+      }
+    }
+
     const source = this._audioContext.createMediaStreamSource(this._mediaStream);
     this._workletNode = new AudioWorkletNode(this._audioContext, 'audio-downsample-processor');
-
     this._workletNode.port.onmessage = (e) => {
       if (e.data.type !== 'frame') return;
       const frame = e.data.data;
       this.mainRecBuffer.push(frame);
+      // [R17] Warn if the recording buffer grows beyond the max duration cap
+      if (this.mainRecBuffer.length === MAX_REC_BUFFER_FRAMES) {
+        console.warn('[Recorder] recording buffer exceeds 3-hour cap; oldest frames will be dropped on WAV encode');
+      }
       this._currentRmsLevel = this._rms(frame);
       if (this._liveTx) this._onAudioFrame(frame, this._mainVAD);
     };
-
     source.connect(this._workletNode);
     const silentGain = this._audioContext.createGain();
     silentGain.gain.value = 0;
     this._workletNode.connect(silentGain);
     silentGain.connect(this._audioContext.destination);
 
-    // Optional second mic stream
-    if (captureMyVoice) {
+    // ── Mic stream: only when loopback is also active (labels voice as [Me]) ──
+    if (loopbackEnabled && micEnabled) {
       try {
-        const micId = outputDeviceId; // reuse the mic selector value passed in
         this._micStream = await navigator.mediaDevices.getUserMedia({
           audio: {
-            deviceId: micId ? { exact: micId } : undefined,
+            deviceId: micDeviceId ? { exact: micDeviceId } : undefined,
             echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
@@ -195,30 +285,51 @@ export class Recorder {
       }
     }
 
+    this._starting = false; // [R15] clear setup flag before marking live
     this.isRecording = true;
     this._startLevelMeter();
     this._emit('status', 'Listening…', 'recording');
   }
 
   async pause() {
+    // Defer if start() is still setting up the audio graph. [R15]
+    if (this._starting) {
+      console.warn('[Recorder] pause() called while start() is in progress — deferring');
+      return;
+    }
     if (!this.isRecording) return;
     this._stopLevelMeter();
+    clearTimeout(this._summaryTimer); // [R14] stop rolling summary timer on pause
     this._emit('status', 'Pausing…', 'loading');
 
-    this._workletNode?.disconnect();
-    this._micWorklet?.disconnect();
+    if (this._workletNode) {
+      this._workletNode.port.onmessage = null;
+      this._workletNode.disconnect();
+      this._workletNode = null;
+    }
+    if (this._micWorklet) {
+      this._micWorklet.port.onmessage = null;
+      this._micWorklet.disconnect();
+      this._micWorklet = null;
+    }
     this._mediaStream?.getTracks().forEach((t) => t.stop());
+    this._mediaStream = null;
     this._micStream?.getTracks().forEach((t) => t.stop());
-    this._micStream  = null;
-    this._micWorklet = null;
+    this._micStream = null;
 
     await this._audioContext?.close();
+    this._audioContext = null;
 
-    // Flush remaining VAD speech
+    // Flush remaining VAD speech (including short buffers below MIN_SPEECH_FRAMES
+    // so last few words aren't silently dropped at the end of a recording). [R10]
+    // Then drain the full inference chain so enhanceTranscript (called next by the
+    // caller) doesn't overlap in-flight transcriptions. [R5]
     const flushJobs = [this._mainVAD, this._myVAD]
-      .filter((v) => v.buffer.length > 0 && v.speechFrames >= this.MIN_SPEECH_FRAMES)
+      .filter((v) => v.buffer.length > 0)
       .map((v) => this._flushSegment(v));
     await Promise.all(flushJobs);
+    // Drain any inference still running (the flush schedules work on _inferenceChain)
+    await this._inferenceChain;
 
     this.isRecording = false;
 
@@ -236,7 +347,7 @@ export class Recorder {
 
     const hasContent = this.currentTranscript.trim() || this.mainRecBuffer.length >= 1000;
     this._emit('status',
-      hasContent ? 'Paused — hit Go to resume or Generate Notes when done' : 'Ready — pick devices and hit Go',
+      hasContent ? 'Paused — hit Record to resume or Generate when done' : 'Ready',
       hasContent ? 'paused' : 'idle'
     );
   }
@@ -244,55 +355,26 @@ export class Recorder {
   resetSession() {
     if (this.isRecording) return;
     clearTimeout(this._summaryTimer);
+    clearTimeout(this._autoSaveTimer);  // [R11] clear auto-save timer
     this._isSummarizing          = false;
     this._lastSummarizedFrameIdx = 0;
     this.prevSummary             = '';
     this.sessionTimestamp        = null;
     this.currentTranscript       = '';
+    this.activeMeetingId         = null;
     this.mainRecBuffer           = [];
     this.myRecBuffer             = [];
     this._typeChain              = Promise.resolve();
-    this._emit('status', 'Ready — pick devices and hit Go', 'idle');
-  }
-
-  // ── Passthrough ────────────────────────────────────────────────────────────
-
-  async startPassthrough(inputDeviceId, outputDeviceId) {
-    this.stopPassthrough();
-    try {
-      this._passthroughStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: inputDeviceId ? { exact: inputDeviceId } : undefined,
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-      });
-      this._monitorAudio = new Audio();
-      this._monitorAudio.srcObject = this._passthroughStream;
-      this._monitorAudio.muted = false;
-      if (outputDeviceId && this._monitorAudio.setSinkId) {
-        await this._monitorAudio.setSinkId(outputDeviceId).catch(() => {});
-      }
-      await this._monitorAudio.play();
-    } catch (err) {
-      console.warn('[Recorder] Passthrough failed:', err.message);
-    }
-  }
-
-  stopPassthrough() {
-    if (this._monitorAudio) {
-      this._monitorAudio.pause();
-      this._monitorAudio.srcObject = null;
-      this._monitorAudio = null;
-    }
-    this._passthroughStream?.getTracks().forEach((t) => t.stop());
-    this._passthroughStream = null;
+    this._inferenceChain         = Promise.resolve();  // [R11] reset inference mutex
+    this._emit('status', 'Ready', 'idle');
   }
 
   // ── High-quality re-transcription (for "Generate Notes") ────────────────────
 
   async enhanceTranscript() {
+    // Guard: don't run while actively recording — the buffers are still growing.
+    // Callers should pause first. Snapshot buffers at entry to be safe.
+    if (this.isRecording) return false;
     if (this.mainRecBuffer.length === 0) return false;
 
     this._emit('status', 'Re-processing audio for higher accuracy…', 'loading');
@@ -307,14 +389,19 @@ export class Recorder {
     let mainChunks = [];
     let myChunks   = [];
 
+    // Route through the inference mutex so enhanceTranscript never races with
+    // live VAD flushes or dictation that may still be draining. [R1]
     try {
-      const mainResult = await this.engine.transcribeFileTimestamped(mainPcm, (chunkText) => {
-        if (!chunkText.trim()) return;
-        this.currentTranscript += (this.currentTranscript ? ' ' : '') + chunkText.trim();
-        this._emit('transcript', this.currentTranscript);
-        this._emit('status', `Re-processing… ${chunkText.trim().slice(0, 50)}…`, 'loading');
-      });
-      mainChunks = (mainResult.chunks ?? []).map((c) => ({ ...c, speaker: null }));
+      let mainResult;
+      await (this._inferenceChain = this._inferenceChain.then(() =>
+        this.engine.transcribeFileTimestamped(mainPcm, (chunkText) => {
+          if (!chunkText.trim()) return;
+          this.currentTranscript += (this.currentTranscript ? ' ' : '') + chunkText.trim();
+          this._emit('transcript', this.currentTranscript);
+          this._emit('status', `Re-processing… ${chunkText.trim().slice(0, 50)}…`, 'loading');
+        }).then((r) => { mainResult = r; })
+      ));
+      mainChunks = (mainResult?.chunks ?? []).map((c) => ({ ...c, speaker: null }));
 
       if (!this.currentTranscript.trim()) {
         const fallback = mainChunks.filter((c) => c.text?.trim()).map((c) => c.text.trim()).join(' ')
@@ -334,8 +421,23 @@ export class Recorder {
 
     if (hasMic) {
       try {
-        const myResult = await this.engine.transcribeFileTimestamped(myPcm);
-        myChunks = (myResult.chunks ?? []).map((c) => ({ ...c, speaker: 'Me' }));
+        let myResult;
+        await (this._inferenceChain = this._inferenceChain.then(() =>
+          this.engine.transcribeFileTimestamped(myPcm).then((r) => { myResult = r; })
+        ));
+        // The mic and loopback streams are started at slightly different times.
+        // Estimate mic-start delay: myPcm may be shorter than mainPcm by the delta.
+        const mainDurationS = mainPcm.length / SAMPLE_RATE;
+        const micDurationS  = myPcm.length / SAMPLE_RATE;
+        const micDelayS = Math.max(0, mainDurationS - micDurationS);
+        // Offset all mic chunk timestamps by the measured delay so they sort correctly.
+        myChunks = (myResult?.chunks ?? []).map((c) => ({
+          ...c,
+          speaker: 'Me',
+          timestamp: c.timestamp
+            ? [c.timestamp[0] + micDelayS, c.timestamp[1] + micDelayS]
+            : c.timestamp,
+        }));
       } catch { /* ignore */ }
 
       if (myChunks.length > 0) {
@@ -356,7 +458,14 @@ export class Recorder {
     }
 
     this._emit('status', 'Re-processing complete.', 'paused');
-    return true;
+
+    // Return the merged chunk list so callers can persist per-chunk timestamps.
+    if (hasMic && myChunks.length > 0) {
+      return [...mainChunks, ...myChunks]
+        .filter((c) => c.text?.trim())
+        .sort((a, b) => (a.timestamp?.[0] ?? 0) - (b.timestamp?.[0] ?? 0));
+    }
+    return mainChunks.filter((c) => c.text?.trim());
   }
 
   /** Transcribe an imported audio file */
@@ -373,12 +482,22 @@ export class Recorder {
       throw err;
     }
 
+    // Ensure model is loaded before transcribing (cold-start safety). [R12]
+    await this.loadModel();
+
+    // Reset typing animation chain so import doesn't overlap a live session. [R13]
+    this._typeChain = Promise.resolve();
+
     this._emit('status', `Transcribing ${file.name}…`, 'loading');
-    const result = await this.engine.transcribeFile(pcm, ({ chunkText }) => {
-      if (chunkText.trim()) {
-        this._typeChain = this._typeChain.then(() => this._typeInSegment(chunkText));
-      }
-    });
+    // Route through inference mutex so file import doesn't race VAD flushes. [R4]
+    let result;
+    await (this._inferenceChain = this._inferenceChain.then(() =>
+      this.engine.transcribeFile(pcm, ({ chunkText }) => {
+        if (chunkText.trim()) {
+          this._typeChain = this._typeChain.then(() => this._typeInSegment(chunkText));
+        }
+      }).then((r) => { result = r; })
+    ));
     await this._typeChain;
 
     if (!this.currentTranscript.trim() && result?.text?.trim()) {
@@ -416,6 +535,7 @@ export class Recorder {
       this._rescheduleRollingSummary();
       return;
     }
+    const snapshotIdx = this.mainRecBuffer.length;
     const newFrames = this.mainRecBuffer.slice(this._lastSummarizedFrameIdx);
     if (newFrames.length < 100 * 10) {
       this._rescheduleRollingSummary();
@@ -423,18 +543,28 @@ export class Recorder {
     }
 
     this._isSummarizing = true;
-    this._lastSummarizedFrameIdx = this.mainRecBuffer.length;
     this._emit('summary-state', 'Transcribing…');
 
     let deltaText = '';
     try {
       const deltaPcm = this._concatFrames(newFrames);
-      const result = await this.engine.transcribeFileTimestamped(deltaPcm);
-      deltaText = (result.chunks ?? []).filter((c) => c.text?.trim()).map((c) => c.text.trim()).join(' ');
+      // Route through inference mutex so summary doesn't race live VAD flushes. [R2]
+      let result;
+      await (this._inferenceChain = this._inferenceChain.then(() =>
+        this.engine.transcribeFileTimestamped(deltaPcm).then((r) => { result = r; })
+      ));
+      deltaText = (result?.chunks ?? []).filter((c) => c.text?.trim()).map((c) => c.text.trim()).join(' ');
     } catch {
       this._isSummarizing = false;
       this._emit('summary-state', '');
       this._rescheduleRollingSummary();
+      return;
+    }
+
+    // Cooperative abort: bail if recording stopped while we were transcribing
+    if (!this.isRecording) {
+      this._isSummarizing = false;
+      this._emit('summary-state', '');
       return;
     }
 
@@ -454,8 +584,14 @@ export class Recorder {
     });
 
     try {
-      await window.api.generateSummary({ prevSummary: this.prevSummary, deltaText, meetingId });
-      this.prevSummary = accumulated;
+      const res = await window.api.generateSummary({ prevSummary: this.prevSummary, deltaText, meetingId });
+      // Cooperative abort check after async IPC
+      if (!this.isRecording) return;
+      if (res?.ok) {
+        // Advance frame index only on success so we don't skip audio on failure
+        this._lastSummarizedFrameIdx = snapshotIdx;
+        this.prevSummary = accumulated;
+      }
     } catch { /* ignore */ } finally {
       window.api.offSummaryChunk();
       this._isSummarizing = false;
@@ -480,6 +616,7 @@ export class Recorder {
   }
 
   _rms(frame) {
+    if (!frame?.length) return 0; // [R16] guard divide-by-zero on empty frame
     let sum = 0;
     for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
     return Math.sqrt(sum / frame.length);
@@ -497,7 +634,9 @@ export class Recorder {
       }
     } else {
       vad.buffer.push(frame);
-      if (vad.smoothedRms > this.SPEECH_RMS) {
+      // Use SILENCE_RMS (< SPEECH_RMS) as the exit threshold for hysteresis:
+      // once speaking, keep speaking until volume drops below the lower level. [R9]
+      if (vad.smoothedRms > this.SILENCE_RMS) {
         vad.speechFrames++;
         vad.silenceFrames = 0;
       } else {
@@ -528,19 +667,24 @@ export class Recorder {
 
     this._emit('transcribing');
 
+    // Serialize inference through the mutex so concurrent VAD flushes (main + mic)
+    // don't call the model simultaneously and corrupt its internal state.
     let text = '';
-    try {
-      ({ text } = await this.engine.transcribeSegment(audio));
-    } catch (err) {
-      console.error('[VAD] Transcription error:', err);
-      this._emit('error', err.message);
-    }
-
-    vad.flushing = false;
-
-    if (text) {
-      this._typeChain = this._typeChain.then(() => this._typeInSegment(text, vad.label));
-    }
+    this._inferenceChain = this._inferenceChain.then(async () => {
+      try {
+        ({ text } = await this.engine.transcribeSegment(audio));
+      } catch (err) {
+        console.error('[VAD] Transcription error:', err);
+        this._emit('error', err.message);
+      }
+      vad.flushing = false;
+      if (text) {
+        this._typeChain = this._typeChain.then(() => this._typeInSegment(text, vad.label));
+      }
+    }).catch((err) => {
+      vad.flushing = false;
+      console.error('[VAD] Inference chain error:', err);
+    });
   }
 
   async _typeInSegment(text, speakerLabel = null) {
@@ -560,14 +704,16 @@ export class Recorder {
     this._emit('segment', { text: text.trim(), speaker: speakerLabel });
     this._emit('transcript', this.currentTranscript);
 
-    // Auto-save transcript
+    // Auto-save transcript (debounced)
     if (this.sessionTimestamp) {
       clearTimeout(this._autoSaveTimer);
       this._autoSaveTimer = setTimeout(() => {
         window.api.saveTranscript({
           text: this.currentTranscript,
           filePath: `recordings/${this.sessionTimestamp}/transcript.txt`,
-        });
+        }).then((res) => {
+          if (!res?.ok) console.warn('[Recorder] saveTranscript failed:', res?.error);
+        }).catch((err) => console.warn('[Recorder] saveTranscript error:', err));
       }, 2000);
     }
   }
@@ -654,6 +800,12 @@ export class Recorder {
   async startDictation() {
     if (this._dictationStream) return true;
 
+    // Mutual exclusion: refuse dictation while recording is active
+    if (this.isRecording) {
+      console.warn('[Dictation] Cannot start dictation while recording is in progress');
+      return false;
+    }
+
     console.log('[Dictation] starting, model loaded:', this.engine.isLoaded);
     if (!this.engine.isLoaded) {
       console.warn('[Dictation] Parakeet model not loaded — open a note and wait for the model to initialise first');
@@ -709,6 +861,9 @@ export class Recorder {
   async stopDictation() {
     if (!this._dictationStream) return null;
 
+    // Give the worklet a brief window to flush any last frames before teardown. [R6]
+    await new Promise((r) => setTimeout(r, 50));
+
     const frames = this._dictationFrames ?? [];
     console.log('[Dictation] stopping, frames collected:', frames.length);
 
@@ -729,7 +884,12 @@ export class Recorder {
     const audio = this._concatFrames(frames);
     console.log('[Dictation] transcribing', audio.length, 'samples (', (audio.length / 16000).toFixed(1), 's)');
     try {
-      const { text } = await this.engine.transcribeSegment(audio);
+      // Route through inference mutex so dictation doesn't race live VAD flushes. [R3]
+      let text = null;
+      await (this._inferenceChain = this._inferenceChain.then(async () => {
+        const result = await this.engine.transcribeSegment(audio);
+        text = result.text;
+      }));
       console.log('[Dictation] transcription result:', JSON.stringify(text));
       return text?.trim() || null;
     } catch (err) {

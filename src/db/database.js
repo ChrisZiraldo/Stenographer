@@ -15,6 +15,7 @@ export function getDb() {
 }
 
 export function initDb() {
+  if (db) return db; // idempotent — already open
   const userDataPath = app.getPath('userData');
   mkdirSync(userDataPath, { recursive: true });
   const dbPath = join(userDataPath, 'stenographer.db');
@@ -32,7 +33,7 @@ function runMigrations(db) {
     CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
   `);
 
-  const row = db.prepare('SELECT version FROM schema_version').get();
+  const row = db.prepare('SELECT MAX(version) AS version FROM schema_version').get();
   const currentVersion = row?.version ?? 0;
 
   if (currentVersion < 1) {
@@ -125,10 +126,11 @@ function runMigrations(db) {
   }
 
   if (currentVersion < 3) {
-    db.exec(`
-      ALTER TABLE meetings ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;
-      INSERT OR REPLACE INTO schema_version(version) VALUES (3);
-    `);
+    const cols = db.prepare("PRAGMA table_info(meetings)").all().map((c) => c.name);
+    if (!cols.includes('starred')) {
+      db.exec(`ALTER TABLE meetings ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;`);
+    }
+    db.exec(`INSERT OR REPLACE INTO schema_version(version) VALUES (3);`);
   }
 }
 

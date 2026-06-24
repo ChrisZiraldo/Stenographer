@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, Sliders, Mic, Volume2, Radio, Moon, Sun } from 'lucide-react';
+import { X, Sliders, Mic, Moon, Sun, Eye, EyeOff, Key, Check } from 'lucide-react';
 import { useAppStore } from '../store/appStore.js';
 import { recorder } from '../engine/recorder.js';
 
@@ -81,22 +81,54 @@ export function SettingsDrawer({ open, onClose }) {
     summaryIntervalSecs, setSummaryInterval,
     darkMode, setDarkMode,
     devices, setDevices,
-    inputDeviceId, setInputDeviceId,
-    outputDeviceId, setOutputDeviceId,
     micDeviceId, setMicDeviceId,
-    passthroughEnabled, setPassthrough,
-    captureMyVoice, setCaptureMyVoice,
+    loopbackEnabled, setLoopbackEnabled,
+    micEnabled, setMicEnabled,
+    cursorApiKey, setCursorApiKey,
   } = useAppStore();
 
-  const inputs  = devices.filter((d) => d.kind === 'audioinput');
-  const outputs = devices.filter((d) => d.kind === 'audiooutput');
+  const inputs = devices.filter((d) => d.kind === 'audioinput');
+  const [apiKeyDraft, setApiKeyDraft] = useState('');
+  const [savedKey, setSavedKey]       = useState(''); // last value actually persisted to disk
+  const [showKey, setShowKey]         = useState(false);
+  const [keySaved, setKeySaved]       = useState(false);
+  const [keySaveError, setKeySaveError] = useState('');
 
   useEffect(() => {
     if (!open) return;
     recorder.enumerateDevices().then((devs) => {
       setDevices(devs);
-    });
+    }).catch((err) => console.warn('[SettingsDrawer] enumerateDevices failed:', err.message)); // [C12]
+    window.api.getApiKey().then((key) => {
+      const k = key || '';
+      setApiKeyDraft(k);
+      setSavedKey(k);
+      setCursorApiKey(k);
+    }).catch((err) => console.warn('[SettingsDrawer] getApiKey failed:', err.message)); // [C12]
   }, [open]);
+
+  // Auto-save if the user closes the drawer without clicking Save
+  useEffect(() => {
+    if (open) return; // only runs on close
+    const trimmed = apiKeyDraft.trim();
+    if (trimmed === savedKey) return; // nothing changed
+    saveApiKey(trimmed);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveApiKey = async (keyOverride) => {
+    const trimmed = (keyOverride !== undefined ? keyOverride : apiKeyDraft).trim();
+    setKeySaveError('');
+    try {
+      await window.api.setApiKey(trimmed);
+      setSavedKey(trimmed);
+      setCursorApiKey(trimmed);
+      setKeySaved(true);
+      setTimeout(() => setKeySaved(false), 2000);
+    } catch (err) {
+      setKeySaveError('Save failed — check console for details.');
+      console.error('[SettingsDrawer] setApiKey failed:', err);
+    }
+  };
 
   const applyEq = (field, val) => {
     setEq(field, val);
@@ -163,51 +195,43 @@ export function SettingsDrawer({ open, onClose }) {
           <div style={{ ...col, ...divider }}>
             <SectionLabel>Audio</SectionLabel>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <SelectField
-                icon={Mic} label="Input / BlackHole"
-                value={inputDeviceId} onChange={setInputDeviceId}
-                options={inputs}
-              />
-              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
-                <span style={{ fontSize: 13, color: 'var(--ink)' }}>Pass-through to speakers</span>
-                <input
-                  type="checkbox"
-                  checked={passthroughEnabled}
-                  onChange={(e) => {
-                    setPassthrough(e.target.checked);
-                    if (e.target.checked) recorder.startPassthrough(inputDeviceId, outputDeviceId);
-                    else { recorder.stopPassthrough(); setCaptureMyVoice(false); }
-                  }}
-                  className="accent-[#5c6e00]"
-                  style={{ width: 15, height: 15 }}
-                />
-              </label>
-              {passthroughEnabled && (
-                <SelectField
-                  icon={Volume2} label="Output"
-                  value={outputDeviceId} onChange={setOutputDeviceId}
-                  options={outputs}
-                />
-              )}
-              {passthroughEnabled && (
+
+              {/* Loopback toggle */}
+              <div>
                 <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
-                  <span style={{ fontSize: 13, color: 'var(--ink)' }}>Include my voice</span>
+                  <span style={{ fontSize: 13, color: 'var(--ink)' }}>Capture call audio</span>
                   <input
                     type="checkbox"
-                    checked={captureMyVoice}
-                    onChange={(e) => setCaptureMyVoice(e.target.checked)}
+                    checked={loopbackEnabled}
+                    onChange={(e) => setLoopbackEnabled(e.target.checked)}
                     className="accent-[#5c6e00]"
                     style={{ width: 15, height: 15 }}
                   />
                 </label>
-              )}
-              {captureMyVoice && (
+                <p style={{ fontSize: 11, color: 'var(--ink-faint)', marginTop: 4, lineHeight: 1.4 }}>
+                  Records what you hear — no Zoom changes needed
+                </p>
+              </div>
+
+              {/* Mic toggle + device picker */}
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
+                <span style={{ fontSize: 13, color: 'var(--ink)' }}>Use microphone</span>
+                <input
+                  type="checkbox"
+                  checked={micEnabled}
+                  onChange={(e) => setMicEnabled(e.target.checked)}
+                  className="accent-[#5c6e00]"
+                  style={{ width: 15, height: 15 }}
+                />
+              </label>
+              {micEnabled && (
                 <SelectField
-                  icon={Radio} label="My Mic"
+                  icon={Mic} label="Microphone"
                   value={micDeviceId} onChange={setMicDeviceId}
                   options={inputs}
                 />
               )}
+
             </div>
           </div>
 
@@ -278,6 +302,82 @@ export function SettingsDrawer({ open, onClose }) {
           </div>
 
         </div>
+
+        {/* API Key */}
+        <div style={{
+          borderTop: '1px solid var(--border-soft)',
+          padding: '16px 22px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, fontWeight: 700, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: '0.09em' }}>
+            <Key size={10} /> Cursor API Key
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ position: 'relative', flex: 1 }}>
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={apiKeyDraft}
+                onChange={(e) => { setApiKeyDraft(e.target.value); setKeySaved(false); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveApiKey(); e.stopPropagation(); }}
+                placeholder="cursor_..."
+                spellCheck={false}
+                style={{
+                  width: '100%',
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--ink)',
+                  fontSize: 12,
+                  padding: '7px 36px 7px 10px',
+                  borderRadius: 8,
+                  outline: 'none',
+                  fontFamily: 'monospace',
+                  boxSizing: 'border-box',
+                }}
+              />
+              <button
+                onClick={() => setShowKey((v) => !v)}
+                style={{
+                  position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+                  background: 'transparent', border: 'none', cursor: 'pointer',
+                  color: 'var(--ink-faint)', display: 'flex', padding: 0,
+                }}
+              >
+                {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            </div>
+            <button
+              onClick={() => saveApiKey()}
+              style={{
+                padding: '7px 14px',
+                borderRadius: 8,
+                border: 'none',
+                background: keySaved ? '#5c6e00' : 'var(--bg-elevated)',
+                color: keySaved ? '#fff' : 'var(--ink)',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+                transition: 'background 0.15s, color 0.15s',
+                whiteSpace: 'nowrap',
+                border: '1px solid var(--border)',
+              }}
+            >
+              {keySaved ? <><Check size={12} /> Saved</> : 'Save'}
+            </button>
+          </div>
+          {keySaveError && (
+            <p style={{ fontSize: 11, color: '#c0392b', margin: 0, lineHeight: 1.4 }}>{keySaveError}</p>
+          )}
+          <p style={{ fontSize: 11, color: 'var(--ink-faint)', margin: 0, lineHeight: 1.4 }}>
+            Stored locally on this machine. Get your key at{' '}
+            <span style={{ color: 'var(--ink)', fontFamily: 'monospace', fontSize: 10 }}>cursor.com/settings</span>.
+          </p>
+        </div>
+
       </div>
     </div>
   );

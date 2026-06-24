@@ -29,11 +29,9 @@ export const useAppStore = create((set, get) => ({
 
   // ── Device settings ────────────────────────────────────────────────────────
   devices: [],
-  inputDeviceId: '',
-  outputDeviceId: '',
   micDeviceId: '',
-  passthroughEnabled: false,
-  captureMyVoice: false,
+  loopbackEnabled: true,
+  micEnabled: true,
   liveTxEnabled: true,
   liveSummaryEnabled: true,
   summaryIntervalSecs: 30,
@@ -43,6 +41,9 @@ export const useAppStore = create((set, get) => ({
   eqReactivity: 5,
   eqMinSpeech: 3,
   eqSilence: 5,
+
+  // ── API ────────────────────────────────────────────────────────────────────
+  cursorApiKey: '',
 
   // ── Theme ──────────────────────────────────────────────────────────────────
   darkMode: (() => { try { return localStorage.getItem('steno:darkMode') === 'true'; } catch { return false; } })(),
@@ -66,7 +67,13 @@ export const useAppStore = create((set, get) => ({
     liveTranscript: s.liveTranscript + (s.liveTranscript ? ' ' : '') +
       (seg.speaker ? `[${seg.speaker}] ` : '') + seg.text,
   })),
-  removeLiveSegment: (id) => set((s) => ({ liveSegments: s.liveSegments.filter((seg) => seg.id !== id) })),
+  removeLiveSegment: (id) => set((s) => {
+    const remaining = s.liveSegments.filter((seg) => seg.id !== id);
+    const rebuilt = remaining
+      .map((seg) => (seg.speaker ? `[${seg.speaker}] ` : '') + seg.text)
+      .join(' ');
+    return { liveSegments: remaining, liveTranscript: rebuilt };
+  }),
   setLiveTranscript: (t) => set({ liveTranscript: t }),
   setLiveSegments:   (segs) => set({ liveSegments: segs }),
 
@@ -82,16 +89,16 @@ export const useAppStore = create((set, get) => ({
   clearPendingImportFile: () => set({ pendingImportFile: null }),
 
   setDevices:          (d) => set({ devices: d }),
-  setInputDeviceId:    (id) => set({ inputDeviceId: id }),
-  setOutputDeviceId:   (id) => set({ outputDeviceId: id }),
   setMicDeviceId:      (id) => set({ micDeviceId: id }),
-  setPassthrough:      (b) => set({ passthroughEnabled: b }),
-  setCaptureMyVoice:   (b) => set({ captureMyVoice: b }),
+  setLoopbackEnabled:  (b) => set({ loopbackEnabled: b }),
+  setMicEnabled:       (b) => set({ micEnabled: b }),
   setLiveTx:           (b) => set({ liveTxEnabled: b }),
   setLiveSummaryOn:    (b) => set({ liveSummaryEnabled: b }),
   setSummaryInterval:  (n) => set({ summaryIntervalSecs: n }),
 
   setEq: (field, val) => set({ [field]: val }),
+
+  setCursorApiKey: (key) => set({ cursorApiKey: key }),
 
   setDarkMode: (b) => {
     localStorage.setItem('steno:darkMode', String(b));
@@ -101,6 +108,8 @@ export const useAppStore = create((set, get) => ({
   resetWorkspaceState: () => set({
     recordingStatus: 'idle',
     statusMessage: 'Ready',
+    loadingProgress: null, // [C13]
+    audioLevel: 0,         // [C13]
     liveTranscript: '',
     liveSegments: [],
     liveSummary: '',
@@ -109,5 +118,6 @@ export const useAppStore = create((set, get) => ({
     generatedNotes: '',
     notesView: 'human',
     pendingImportFile: null,
+    rightTab: 'transcript',
   }),
 }));

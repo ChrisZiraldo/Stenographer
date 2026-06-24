@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld('api', {
   saveAudio:      (args) => ipcRenderer.invoke('save-audio', args),
   openRecordingsFolder: () => ipcRenderer.invoke('open-recordings-folder'),
 
+  // ── Settings ───────────────────────────────────────────────────────────────
+  getApiKey: ()    => ipcRenderer.invoke('settings:getApiKey'),
+  setApiKey: (key) => ipcRenderer.invoke('settings:setApiKey', key),
+
   // ── AI generation ──────────────────────────────────────────────────────────
   generateNotes:   (args) => ipcRenderer.invoke('generate-notes', args),
   generateMerge:   (args) => ipcRenderer.invoke('generate-merge', args),
@@ -56,13 +60,15 @@ contextBridge.exposeInMainWorld('api', {
     saveNoteDoc:    (meetingId, doc)   => ipcRenderer.invoke('db:saveNoteDoc', { meetingId, ...doc }),
     saveSummary:    (meetingId, md)    => ipcRenderer.invoke('db:saveSummary', { meetingId, summaryMd: md }),
     saveGenerated:  (meetingId, md)    => ipcRenderer.invoke('db:saveGenerated', { meetingId, generatedMd: md }),
-    upsertSegments: (meetingId, segs)  => ipcRenderer.invoke('db:upsertSegments', { meetingId, segments: segs }),
-    getSegments:    (meetingId)        => ipcRenderer.invoke('db:getSegments', meetingId),
+    upsertSegments:  (meetingId, segs)  => ipcRenderer.invoke('db:upsertSegments',  { meetingId, segments: segs }),
+    replaceSegments: (meetingId, segs)  => ipcRenderer.invoke('db:replaceSegments', { meetingId, segments: segs }),
+    getSegments:     (meetingId)        => ipcRenderer.invoke('db:getSegments', meetingId),
     getSpaces:      ()                 => ipcRenderer.invoke('db:getSpaces'),
     saveSpaces:     (spaces)           => ipcRenderer.invoke('db:saveSpaces', spaces),
     toggleStar:     (id)               => ipcRenderer.invoke('db:toggleStar', id),
-    listTodos:      (opts)             => ipcRenderer.invoke('db:listTodos', opts),
-    upsertTodo:     (todo)             => ipcRenderer.invoke('db:upsertTodo', todo),
+    listTodos:          (opts)                    => ipcRenderer.invoke('db:listTodos', opts),
+    upsertTodo:         (todo)                    => ipcRenderer.invoke('db:upsertTodo', todo),
+    replaceHumanTodos:  (meetingId, tasks)        => ipcRenderer.invoke('db:replaceHumanTodos', { meetingId, tasks }),
     toggleTodo:     (id)               => ipcRenderer.invoke('db:toggleTodo', id),
     deleteTodo:     (id)               => ipcRenderer.invoke('db:deleteTodo', id),
     search:         (query, opts)      => ipcRenderer.invoke('db:search', { query, ...opts }),

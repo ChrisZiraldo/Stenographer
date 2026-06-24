@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
-  Plus, Search, Home, Mic, Upload,
+  Plus, Search, Home, Mic, Upload, CassetteTape,
   Trash2, X, ChevronDown, ChevronRight,
   Briefcase, User, Users, Calendar, Star, FileText, CheckCircle,
   Settings, Tag, MessageSquare,
@@ -106,6 +106,9 @@ function groupMeetingsByDate(meetings) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// Single authoritative blank-title constant used everywhere a new note is created. [W16]
+const NEW_NOTE_TITLE = 'New Note';
+
 function cleanTitle(raw) {
   if (!raw) return 'Untitled Meeting';
   if (/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$/.test(raw.trim())) return 'Untitled Meeting';
@@ -175,7 +178,7 @@ const COLOR_PRESETS = [
 // ── Meeting row ───────────────────────────────────────────────────────────────
 
 function MeetingRow({ meeting, onOpen, onDelete, onRemoveTag, onToggleStar, isSelected }) {
-  const hasAudio = !!meeting.audio_path;
+  const hasAudio = !!meeting.has_recording || !!meeting.audio_path;
   const title    = cleanTitle(meeting.title);
   const isStarred = !!meeting.starred;
   const timeStr  = meeting.created_at ? (() => {
@@ -223,7 +226,7 @@ function MeetingRow({ meeting, onOpen, onDelete, onRemoveTag, onToggleStar, isSe
       </div>
 
       <div className="flex items-center gap-1 flex-shrink-0">
-        {hasAudio && <Mic size={12} className="text-[#c0b9b0] dark:text-[#5e5850] mr-0.5" />}
+        {hasAudio && <CassetteTape size={13} className="text-[#c0b9b0] dark:text-[#5e5850] mr-0.5" />}
         {timeStr && <span className="text-[12px] text-[#9c9285] dark:text-[#7a7268] tabular-nums group-hover:hidden mr-1">{timeStr}</span>}
         <button
           className={`flex items-center justify-center w-7 h-7 rounded-[8px] transition-all cursor-pointer ${
@@ -268,6 +271,11 @@ function SpaceCreatorPopover({ onSave, onClose }) {
 
   const preset  = COLOR_PRESETS[colorIdx];
   const IconCmp = ICON_OPTIONS.find((o) => o.name === iconName)?.Icon ?? Star;
+
+  const handleSave = () => {
+    if (!name.trim()) return;
+    onSave({ id: Date.now().toString(), name: name.trim().toLowerCase(), icon: iconName, color: preset.color, bg: preset.bg });
+  };
 
   return (
     <div className="mx-2 mt-1.5 mb-1 p-3 rounded-[12px] animate-fade-in" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', boxShadow: '0 4px 16px rgba(0,0,0,0.18)' }}>
@@ -336,10 +344,7 @@ function SpaceCreatorPopover({ onSave, onClose }) {
           Cancel
         </button>
         <button
-          onClick={() => {
-            if (!name.trim()) return;
-            onSave({ id: Date.now().toString(), name: name.trim().toLowerCase(), icon: iconName, color: preset.color, bg: preset.bg });
-          }}
+          onClick={handleSave}
           disabled={!name.trim()}
           className="flex-1 py-1.5 rounded-[8px] text-[12px] font-medium text-white transition-colors disabled:opacity-40"
           style={{ background: preset.color }}
@@ -353,7 +358,7 @@ function SpaceCreatorPopover({ onSave, onClose }) {
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
-function Sidebar({ meetings, activeTag, setActiveTag, searchQuery, setSearchQuery, globalTodos, onNewMeeting, onTagDrop }) {
+function Sidebar({ meetings, activeTag, setActiveTag, searchQuery, setSearchQuery, globalTodos, onNewMeeting, onTagDrop, refresh }) {
   const [spacesOpen,   setSpacesOpen]   = useState(true);
   const [dropTarget,   setDropTarget]   = useState(null);
   const [reorderOver,  setReorderOver]  = useState(null);
@@ -374,18 +379,23 @@ function Sidebar({ meetings, activeTag, setActiveTag, searchQuery, setSearchQuer
   const spaceOrderRef    = useRef(spaceOrder);
   useEffect(() => { spaceOrderRef.current = spaceOrder; }, [spaceOrder]);
 
-  // On mount, load spaces from DB (authoritative) and merge into state
+  // On mount, load spaces from DB and merge — don't overwrite any user edits made
+  // since the component mounted (e.g. created but not yet saved). [W14]
   useEffect(() => {
     window.api?.db?.getSpaces?.().then((rows) => {
       if (!rows?.length) return;
       const loaded = rows.map((r) => ({ name: r.name, icon: r.icon, color: r.color, bg: r.bg }));
       const order  = rows.map((r) => r.name);
-      setCustomSpaces(loaded);
-      localStorage.setItem('steno:customSpaces', JSON.stringify(loaded));
-      // Merge DB order with built-in TAGS order
+      setCustomSpaces((prev) => {
+        // Add DB spaces not already present; preserve locally-created entries
+        const prevNames = new Set(prev.map((s) => s.name));
+        const toAdd = loaded.filter((s) => !prevNames.has(s.name));
+        return toAdd.length ? [...prev, ...toAdd] : prev;
+      });
+      // Merge DB order with current order, appending new DB entries at the end
       const fullOrder = [
-        ...spaceOrderRef.current.filter((n) => !order.includes(n)), // built-ins first
-        ...order,                                                     // then custom in DB order
+        ...spaceOrderRef.current,
+        ...order.filter((n) => !spaceOrderRef.current.includes(n)),
       ];
       setSpaceOrder(fullOrder);
       spaceOrderRef.current = fullOrder;
@@ -411,6 +421,12 @@ function Sidebar({ meetings, activeTag, setActiveTag, searchQuery, setSearchQuer
   };
 
   const handleCreateSpace = (space) => {
+    // Reject names that collide with built-in tags or existing custom spaces
+    const existingNames = [...TAGS, ...customSpaces.map((s) => s.name)];
+    if (existingNames.includes(space.name)) {
+      alert(`A space named "${space.name}" already exists.`);
+      return;
+    }
     const updated   = [...customSpaces, space];
     const newOrder  = [...spaceOrderRef.current, space.name];
     setCustomSpaces(updated);
@@ -421,7 +437,7 @@ function Sidebar({ meetings, activeTag, setActiveTag, searchQuery, setSearchQuer
     setActiveTag(space.name);
   };
 
-  const handleDeleteSpace = (name) => {
+  const handleDeleteSpace = async (name) => {
     const updatedSpaces = customSpaces.filter((s) => s.name !== name);
     const updatedOrder  = spaceOrderRef.current.filter((n) => n !== name);
     setCustomSpaces(updatedSpaces);
@@ -429,6 +445,18 @@ function Sidebar({ meetings, activeTag, setActiveTag, searchQuery, setSearchQuer
     spaceOrderRef.current = updatedOrder;
     setSpaceOrder(updatedOrder);
     if (activeTag === name) setActiveTag(null);
+
+    // Strip the deleted space's tag from all meetings that have it
+    const affected = meetings.filter((m) => {
+      try { return JSON.parse(m.tags || '[]').includes(name); } catch { return false; }
+    });
+    if (affected.length > 0) {
+      await Promise.all(affected.map((m) => {
+        const tags = (() => { try { return JSON.parse(m.tags || '[]'); } catch { return []; } })();
+        return window.api.db.updateMeeting(m.id, { tags: JSON.stringify(tags.filter((t) => t !== name)) });
+      }));
+      refresh?.();
+    }
   };
 
   const handleSpaceReorder = (fromName, toName) => {
@@ -684,7 +712,18 @@ function SearchResults({ results, onOpen }) {
           <div className="flex-1 min-w-0">
             <p className="text-[13px] font-medium text-[#1a1814] truncate">{r.title}</p>
             {r.notes_snippet && (
-              <p className="text-[11px] text-[#9c9285] truncate" dangerouslySetInnerHTML={{ __html: r.notes_snippet }} />
+              <p
+                className="text-[11px] text-[#9c9285] truncate"
+                // Strip all tags except <mark>…</mark> to prevent XSS from FTS snippets. [W11]
+                dangerouslySetInnerHTML={{
+                  __html: r.notes_snippet
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/&lt;mark&gt;/g, '<mark>')
+                    .replace(/&lt;\/mark&gt;/g, '</mark>'),
+                }}
+              />
             )}
           </div>
         </div>
@@ -705,41 +744,75 @@ export function Library() {
   const [settingsOpen, setSettings]   = useState(false);
   const [isDragOver, setIsDragOver]   = useState(false);
   const fileInputRef                  = useRef(null);
+  const searchDebounceRef             = useRef(null);
+  const searchSeqRef                  = useRef(0);
 
   useEffect(() => { refresh(); }, []);
 
-  const handleSearch = useCallback(async (q) => {
+  // Clear pending search debounce on unmount to avoid calling setState on an
+  // unmounted component (e.g. navigating away mid-search). [W12]
+  useEffect(() => {
+    return () => { clearTimeout(searchDebounceRef.current); };
+  }, []);
+
+  const handleSearch = useCallback((q) => {
     setSearchQuery(q);
-    if (!q.trim()) { setSearchResults([]); return; }
+    clearTimeout(searchDebounceRef.current);
 
-    const lower = q.toLowerCase();
-
-    // Client-side filter on already-loaded meetings (title + note preview)
-    const clientMatches = meetings
-      .filter((m) => {
-        const title = (m.title || '').toLowerCase();
-        const notes = (m.human_doc_text || '').toLowerCase();
-        return title.includes(lower) || notes.includes(lower);
-      })
-      .map((m) => ({
-        meeting_id:    m.id,
-        title:         m.title,
-        created_at:    m.created_at,
-        notes_snippet: null,
-      }));
-
-    if (clientMatches.length > 0) {
-      setSearchResults(clientMatches);
+    if (!q.trim()) {
+      ++searchSeqRef.current; // invalidate any in-flight debounced search
+      setSearchResults([]);
       return;
     }
 
-    // Fallback: DB full-text search (transcripts etc.)
-    const dbResults = await window.api.db.search(q);
-    setSearchResults(dbResults ?? []);
+    searchDebounceRef.current = setTimeout(async () => {
+      // Stale-result guard: each search invocation gets a sequence number.
+      // If a newer search started while this one was awaiting, discard results.
+      const seq = ++searchSeqRef.current;
+
+      const lower = q.toLowerCase();
+
+      // Always run FTS so transcript-only matches are included; FTS covers
+      // title + notes + transcript. Fall back to client-side filter if FTS throws.
+      // Sanitize the query to prevent FTS5 syntax errors on special characters
+      // (e.g. C++, "quoted", (parens)) by quoting each term individually.
+      const sanitizedFts = q.trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((t) => `"${t.replace(/"/g, '""')}"*`)
+        .join(' ');
+
+      let dbResults = [];
+      try {
+        dbResults = (await window.api.db.search(sanitizedFts)) ?? [];
+      } catch {
+        // FTS failed; fall through to client-only results
+      }
+
+      if (seq !== searchSeqRef.current) return; // superseded
+
+      // Merge client-side matches (title/notes in loaded list) with FTS results,
+      // deduped by meeting_id. FTS results take precedence for snippet text.
+      const clientMatches = meetings
+        .filter((m) => {
+          const title = (m.title || '').toLowerCase();
+          const notes = (m.human_doc_text || '').toLowerCase();
+          return title.includes(lower) || notes.includes(lower);
+        })
+        .map((m) => ({ meeting_id: m.id, title: m.title, created_at: m.created_at, notes_snippet: null }));
+
+      const seen = new Set(dbResults.map((r) => r.meeting_id));
+      const merged = [
+        ...dbResults,
+        ...clientMatches.filter((m) => !seen.has(m.meeting_id)),
+      ];
+
+      setSearchResults(merged);
+    }, 200);
   }, [setSearchQuery, setSearchResults, meetings]);
 
   const handleNewMeeting = async () => {
-    const meeting = await createMeeting({ title: 'New Meeting' });
+    const meeting = await createMeeting({ title: NEW_NOTE_TITLE });
     if (meeting) setActiveMeeting(meeting.id);
   };
 
@@ -749,9 +822,14 @@ export function Library() {
     if (!file) return;
     if (!file.type.startsWith('audio/') && !AUDIO_EXTS.test(file.name)) return;
     const title = file.name.replace(/\.[^.]+$/, '');
-    setPendingImportFile(file);
+    // Create meeting first so we know which meeting the import belongs to.
+    // The pending file is handled by Workspace; if transcription fails, Workspace
+    // updates status to 'error' and the orphan meeting stays visible (user can retry).
+    // If the meeting was never navigated to, it will be cleaned up by isBlank on Back. [W15]
     const meeting = await createMeeting({ title });
-    if (meeting) setActiveMeeting(meeting.id);
+    if (!meeting) return;
+    setPendingImportFile(file);
+    setActiveMeeting(meeting.id);
   }, [createMeeting, setActiveMeeting, setPendingImportFile]);
 
   // Listen for File > Import Audio… menu trigger
@@ -844,6 +922,7 @@ export function Library() {
             globalTodos={globalTodos}
             onNewMeeting={handleNewMeeting}
             onTagDrop={handleTagDrop}
+            refresh={refresh}
           />
         </div>
       </div>
@@ -873,7 +952,7 @@ export function Library() {
             </button>
             <button
               onClick={async () => {
-                const meeting = await createMeeting({ title: 'New Note' });
+                const meeting = await createMeeting({ title: NEW_NOTE_TITLE });
                 if (meeting) setActiveMeeting(meeting.id);
               }}
               style={{ padding: '8px 20px', fontSize: 13, fontWeight: 500, borderRadius: 999, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--ink)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 7, boxShadow: '0 1px 4px rgba(0,0,0,0.10)', transition: 'background 0.15s' }}
