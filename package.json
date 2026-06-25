@@ -9,7 +9,8 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "rebuild": "HOME=~/.electron-gyp npx node-gyp rebuild --target=36.9.5 --arch=arm64 --dist-url=https://electronjs.org/headers -C node_modules/better-sqlite3",
-    "postinstall": "npm run rebuild || true"
+    "rebuild:llama": "node-llama-cpp source download --gpu metal --arch arm64 --skipBuild || true",
+    "postinstall": "npm run rebuild || true && npm run rebuild:llama || true"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.8.0",
@@ -37,6 +38,7 @@
     "date-fns": "^4.4.0",
     "dotenv": "^16.0.0",
     "lucide-react": "^1.21.0",
+    "node-llama-cpp": "^3.6.0",
     "onnxruntime-web": "^1.21.0",
     "parakeet.js": "^1.4.0",
     "zustand": "^5.0.14"

@@ -1,10 +1,12 @@
-import { app, BrowserWindow, desktopCapturer, ipcMain, Menu, session, shell } from 'electron';
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, session, shell } from 'electron';
 
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, isAbsolute, join, resolve, sep } from 'path';
-import { writeFile, mkdir, rm, readFile } from 'fs/promises';
-import { existsSync, readdirSync, readFileSync, watch as fsWatch } from 'fs';
+import http from 'http';
+import https from 'https';
+import { writeFile, mkdir, rm, readFile, copyFile, stat } from 'fs/promises';
+import { existsSync, readdirSync, readFileSync, statSync, watch as fsWatch } from 'fs';
 import { tmpdir } from 'os';
 import dotenv from 'dotenv';
 import { buildNotesPrompt, buildSummaryPrompt, buildMergePrompt, buildAutoTitlePrompt } from './notes-prompt.js';
@@ -92,6 +94,30 @@ function getStoredApiKey() {
   if (envKey && envKey !== 'cursor_...') return envKey;
   return null;
 }
+
+function getGenConfig() {
+  const s = readSettings();
+  return {
+    provider:        s.genProvider     || 'cursor',
+    cursorModel:     s.cursorModel     || 'composer-2.5',
+    ollamaEndpoint:  s.ollamaEndpoint  || 'http://localhost:11434',
+    ollamaModel:     s.ollamaModel     || '',
+    localModelPath:  s.localModelPath  || '',
+  };
+}
+
+const modelsDir = join(dataDir, 'models');
+
+// Recommended models available for in-app download
+const RECOMMENDED_MODELS = [
+  {
+    id: 'qwen2.5-7b-q4',
+    name: 'Qwen 2.5 7B Instruct (Q4, ~4.7 GB)',
+    filename: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+    url: 'https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+    sizeBytes: 4683542528,
+  },
+];
 
 // These globals are injected at build time by the electron-forge Vite plugin.
 // eslint-disable-next-line no-undef
@@ -213,10 +239,16 @@ app.whenReady().then(() => {
     app.dock.setIcon(join(app.getAppPath(), 'assets', 'icon-dock.png'));
   }
   // Only grant audio permissions to our own app origin. [M13]
+  // In production the renderer loads from file://; in dev it's served by the
+  // Vite dev server, whose port is assigned at runtime — so match against the
+  // actual DEV_SERVER_URL origin rather than a hardcoded port.
   session.defaultSession.setPermissionRequestHandler(
     (webContents, permission, callback) => {
-      const origin = new URL(webContents.getURL()).origin;
-      const isOurOrigin = origin === 'file://' || origin === 'http://localhost:3000';
+      const url = webContents.getURL();
+      const devOrigin = DEV_SERVER_URL ? new URL(DEV_SERVER_URL).origin : null;
+      const isOurOrigin =
+        url.startsWith('file://') ||
+        (devOrigin != null && url.startsWith(devOrigin));
       const allowed = isOurOrigin &&
         ['media', 'microphone', 'audioCapture', 'display-capture'].includes(permission);
       callback(allowed);
@@ -318,7 +350,7 @@ function killPriorJobChild(jobType) {
 }
 
 // ── Shared streaming agent helper ─────────────────────────────────────────────
-function spawnStreamingAgent({ prompt, apiKey, projectRoot, jobType, onChunk, onDone, onError }) {
+function spawnStreamingAgent({ prompt, apiKey, projectRoot, jobType, provider, model, endpoint, modelPath, onChunk, onDone, onError }) {
   // Kill any in-flight job of the same type before spawning a replacement.
   if (jobType) killPriorJobChild(jobType);
 
@@ -377,7 +409,7 @@ function spawnStreamingAgent({ prompt, apiKey, projectRoot, jobType, onChunk, on
   child.stdin.on('error', (err) => {
     if (err.code !== 'EPIPE') console.warn('[agent stdin]', err.message);
   });
-  child.stdin.write(JSON.stringify({ apiKey, cwd: projectRoot, prompt }));
+  child.stdin.write(JSON.stringify({ apiKey, cwd: projectRoot, prompt, provider, model, endpoint, modelPath }));
   child.stdin.end();
 
   child.on('error', (err) => {
@@ -415,10 +447,221 @@ ipcMain.handle('settings:setApiKey', async (_event, key) => {
   return { ok: true };
 });
 
+ipcMain.handle('settings:getGenConfig', () => getGenConfig());
+
+ipcMain.handle('settings:setGenConfig', async (_event, cfg) => {
+  if (!cfg || typeof cfg !== 'object') return { ok: false, error: 'Invalid config' };
+  const settings = readSettings();
+  if (cfg.provider        !== undefined) settings.genProvider    = cfg.provider;
+  if (cfg.cursorModel     !== undefined) settings.cursorModel    = cfg.cursorModel;
+  if (cfg.ollamaEndpoint  !== undefined) settings.ollamaEndpoint = cfg.ollamaEndpoint;
+  if (cfg.ollamaModel     !== undefined) settings.ollamaModel    = cfg.ollamaModel;
+  if (cfg.localModelPath  !== undefined) settings.localModelPath = cfg.localModelPath;
+  await writeSettings(settings);
+  return { ok: true };
+});
+
+ipcMain.handle('settings:listOllamaModels', (_event, endpoint) => {
+  const base = (endpoint || 'http://localhost:11434').replace(/\/$/, '');
+  const url = `${base}/api/tags`;
+  const transport = url.startsWith('https') ? https : http;
+
+  return new Promise((resolve) => {
+    const req = transport.get(url, { timeout: 5000 }, (res) => {
+      let body = '';
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          resolve({ ok: false, error: `Ollama returned HTTP ${res.statusCode}` });
+          return;
+        }
+        try {
+          const data = JSON.parse(body);
+          const models = (data.models || []).map((m) => m.name).filter(Boolean);
+          resolve({ ok: true, models });
+        } catch (e) {
+          resolve({ ok: false, error: `JSON parse error: ${e.message}` });
+        }
+      });
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, error: 'Request timed out after 5s' });
+    });
+    req.on('error', (err) => {
+      console.warn('[settings:listOllamaModels] error:', err.message);
+      resolve({ ok: false, error: err.message });
+    });
+  });
+});
+
+// ── IPC: local model management ───────────────────────────────────────────────
+
+ipcMain.handle('models:list', async () => {
+  try {
+    await mkdir(modelsDir, { recursive: true });
+    const files = readdirSync(modelsDir).filter((f) => f.endsWith('.gguf'));
+    const models = files.map((f) => {
+      const fullPath = join(modelsDir, f);
+      let sizeBytes = 0;
+      try { sizeBytes = statSync(fullPath).size; } catch { /* ignore */ }
+      return { name: f, path: fullPath, sizeBytes };
+    });
+    return { ok: true, models, recommended: RECOMMENDED_MODELS };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('models:import', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Import GGUF Model',
+    filters: [{ name: 'GGUF Models', extensions: ['gguf'] }],
+    properties: ['openFile'],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
+  const src = result.filePaths[0];
+  const filename = src.split('/').pop();
+  try {
+    await mkdir(modelsDir, { recursive: true });
+    const dest = join(modelsDir, filename);
+    if (src !== dest) await copyFile(src, dest);
+    return { ok: true, path: dest, name: filename };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Track active downloads so they can be cancelled
+const _activeDownloads = new Map();
+
+// Follow redirects and stream a URL to a file, emitting progress events
+function downloadToFile({ url, destPath, tmpPath, modelId, spec, resolve }) {
+  const transport = url.startsWith('https') ? https : http;
+  const req = transport.get(url, (res) => {
+    // Follow redirects
+    if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
+      res.resume();
+      downloadToFile({ url: res.headers.location, destPath, tmpPath, modelId, spec, resolve });
+      return;
+    }
+    if (res.statusCode !== 200) {
+      res.resume();
+      _activeDownloads.delete(modelId);
+      resolve({ ok: false, error: `HTTP ${res.statusCode}` });
+      return;
+    }
+
+    const totalBytes = parseInt(res.headers['content-length'] || '0', 10) || spec.sizeBytes;
+    let receivedBytes = 0;
+    const { createWriteStream } = require('fs');
+    const fileStream = createWriteStream(tmpPath);
+
+    res.on('data', (chunk) => {
+      receivedBytes += chunk.length;
+      mainWindow?.webContents.send('model-download-progress', {
+        modelId,
+        receivedBytes,
+        totalBytes,
+        pct: totalBytes ? Math.round((receivedBytes / totalBytes) * 100) : 0,
+      });
+    });
+
+    res.pipe(fileStream);
+
+    fileStream.on('finish', () => {
+      _activeDownloads.delete(modelId);
+      const { renameSync } = require('fs');
+      try {
+        renameSync(tmpPath, destPath);
+      } catch (e) {
+        resolve({ ok: false, error: `Rename failed: ${e.message}` });
+        return;
+      }
+      mainWindow?.webContents.send('model-download-progress', {
+        modelId, receivedBytes: totalBytes, totalBytes, pct: 100, done: true,
+      });
+      resolve({ ok: true, path: destPath, name: spec.filename });
+    });
+
+    fileStream.on('error', (err) => {
+      _activeDownloads.delete(modelId);
+      rm(tmpPath, { force: true }).catch(() => {});
+      resolve({ ok: false, error: err.message });
+    });
+  });
+
+  req.on('error', (err) => {
+    _activeDownloads.delete(modelId);
+    resolve({ ok: false, error: err.message });
+  });
+
+  _activeDownloads.set(modelId, req);
+}
+
+ipcMain.handle('models:download', async (_event, modelId) => {
+  const spec = RECOMMENDED_MODELS.find((m) => m.id === modelId);
+  if (!spec) return { ok: false, error: `Unknown model id: ${modelId}` };
+
+  await mkdir(modelsDir, { recursive: true });
+  const destPath = join(modelsDir, spec.filename);
+  const tmpPath  = destPath + '.download';
+  await rm(tmpPath, { force: true });
+
+  return new Promise((resolve) => {
+    downloadToFile({ url: spec.url, destPath, tmpPath, modelId, spec, resolve });
+  });
+});
+
+ipcMain.handle('models:downloadUrl', async (_event, { url, filename }) => {
+  if (!url || typeof url !== 'string') return { ok: false, error: 'No URL provided' };
+  const name = filename || url.split('/').pop().split('?')[0] || 'model.gguf';
+  const modelId = `custom:${name}`;
+
+  await mkdir(modelsDir, { recursive: true });
+  const destPath = join(modelsDir, name);
+  const tmpPath  = destPath + '.download';
+  await rm(tmpPath, { force: true });
+
+  return new Promise((resolve) => {
+    const spec = { filename: name, sizeBytes: 0 };
+    downloadToFile({ url, destPath, tmpPath, modelId, spec, resolve });
+  });
+});
+
+ipcMain.handle('models:cancelDownload', (_event, modelId) => {
+  const req = _activeDownloads.get(modelId);
+  if (req) {
+    try { req.destroy(); } catch { /* ignore */ }
+    _activeDownloads.delete(modelId);
+  }
+  // Clean up partial file
+  const spec = RECOMMENDED_MODELS.find((m) => m.id === modelId);
+  if (spec) {
+    const tmpPath = join(modelsDir, spec.filename + '.download');
+    rm(tmpPath, { force: true }).catch(() => {});
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('models:delete', async (_event, modelPath) => {
+  if (!modelPath || typeof modelPath !== 'string') return { ok: false, error: 'Invalid path' };
+  // Only allow deleting files inside modelsDir
+  const abs = resolve(modelPath);
+  if (!abs.startsWith(modelsDir + sep)) return { ok: false, error: 'Path outside models directory' };
+  try {
+    await rm(abs, { force: true });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 // ── IPC: generate meeting notes (streaming) ───────────────────────────────────
 ipcMain.handle('generate-notes', async (_event, { transcriptText, notesPath, meetingId }) => {
+  const genCfg = getGenConfig();
   const apiKey = getStoredApiKey();
-  if (!apiKey) {
+  if (genCfg.provider === 'cursor' && !apiKey) {
     return { ok: false, error: 'Cursor API key not set. Add it in Settings.' };
   }
 
@@ -457,6 +700,10 @@ ipcMain.handle('generate-notes', async (_event, { transcriptText, notesPath, mee
       apiKey,
       projectRoot,
       jobType: 'notes',
+      provider:  genCfg.provider,
+      model:     genCfg.provider === 'cursor' ? genCfg.cursorModel : genCfg.ollamaModel,
+      endpoint:  genCfg.ollamaEndpoint,
+      modelPath: genCfg.localModelPath,
       onChunk: (text) => {
         fullText += text;
         mainWindow?.webContents.send('notes-chunk', text);
@@ -469,8 +716,9 @@ ipcMain.handle('generate-notes', async (_event, { transcriptText, notesPath, mee
 
 // ── IPC: generate merge (human notes + transcript) ────────────────────────────
 ipcMain.handle('generate-merge', async (_event, { humanNotesText, transcriptText, meetingId }) => {
+  const genCfg = getGenConfig();
   const apiKey = getStoredApiKey();
-  if (!apiKey) {
+  if (genCfg.provider === 'cursor' && !apiKey) {
     return { ok: false, error: 'Cursor API key not set. Add it in Settings.' };
   }
 
@@ -500,7 +748,11 @@ ipcMain.handle('generate-merge', async (_event, { humanNotesText, transcriptText
       prompt,
       apiKey,
       projectRoot,
-      jobType: 'merge',
+      jobType:   'merge',
+      provider:  genCfg.provider,
+      model:     genCfg.provider === 'cursor' ? genCfg.cursorModel : genCfg.ollamaModel,
+      endpoint:  genCfg.ollamaEndpoint,
+      modelPath: genCfg.localModelPath,
       onChunk: (text) => {
         fullText += text;
         mainWindow?.webContents.send('merge-chunk', text);
@@ -513,8 +765,9 @@ ipcMain.handle('generate-merge', async (_event, { humanNotesText, transcriptText
 
 // ── IPC: generate auto-title ──────────────────────────────────────────────────
 ipcMain.handle('generate-title', async (_event, { transcriptText, notesText, meetingId }) => {
+  const genCfg = getGenConfig();
   const apiKey = getStoredApiKey();
-  if (!apiKey) return { ok: false, error: 'No API key' };
+  if (genCfg.provider === 'cursor' && !apiKey) return { ok: false, error: 'No API key' };
 
   const prompt = buildAutoTitlePrompt(transcriptText, notesText);
   const projectRoot = app.getAppPath();
@@ -543,7 +796,11 @@ ipcMain.handle('generate-title', async (_event, { transcriptText, notesText, mee
       prompt,
       apiKey,
       projectRoot,
-      jobType: 'title',
+      jobType:   'title',
+      provider:  genCfg.provider,
+      model:     genCfg.provider === 'cursor' ? genCfg.cursorModel : genCfg.ollamaModel,
+      endpoint:  genCfg.ollamaEndpoint,
+      modelPath: genCfg.localModelPath,
       onChunk: (text) => { fullText += text; },
       onDone: () => settle(fullText.trim() ? { ok: true } : { ok: false, error: 'No output produced' }),
       onError: (error) => settle({ ok: false, error }),
@@ -553,8 +810,9 @@ ipcMain.handle('generate-title', async (_event, { transcriptText, notesText, mee
 
 // ── IPC: generate rolling summary (streaming) ─────────────────────────────────
 ipcMain.handle('generate-summary', async (_event, { prevSummary, deltaText, meetingId }) => {
+  const genCfg = getGenConfig();
   const apiKey = getStoredApiKey();
-  if (!apiKey) {
+  if (genCfg.provider === 'cursor' && !apiKey) {
     return { ok: false, error: 'Cursor API key not set. Add it in Settings.' };
   }
 
@@ -570,7 +828,11 @@ ipcMain.handle('generate-summary', async (_event, { prevSummary, deltaText, meet
       prompt,
       apiKey,
       projectRoot,
-      jobType: 'summary',
+      jobType:   'summary',
+      provider:  genCfg.provider,
+      model:     genCfg.provider === 'cursor' ? genCfg.cursorModel : genCfg.ollamaModel,
+      endpoint:  genCfg.ollamaEndpoint,
+      modelPath: genCfg.localModelPath,
       onChunk: (text) => {
         fullText += text;
         mainWindow?.webContents.send('summary-chunk', text);
@@ -596,8 +858,9 @@ ipcMain.handle('generate-summary', async (_event, { prevSummary, deltaText, meet
 
 // ── IPC: AI slash command ─────────────────────────────────────────────────────
 ipcMain.handle('ai-command', async (_event, { prompt }) => {
+  const genCfg = getGenConfig();
   const apiKey = getStoredApiKey();
-  if (!apiKey) return { ok: false, error: 'No API key' };
+  if (genCfg.provider === 'cursor' && !apiKey) return { ok: false, error: 'No API key' };
   const projectRoot = app.getAppPath();
 
   return new Promise((resolve) => {
@@ -608,7 +871,11 @@ ipcMain.handle('ai-command', async (_event, { prompt }) => {
       prompt,
       apiKey,
       projectRoot,
-      jobType: 'ai-command',
+      jobType:   'ai-command',
+      provider:  genCfg.provider,
+      model:     genCfg.provider === 'cursor' ? genCfg.cursorModel : genCfg.ollamaModel,
+      endpoint:  genCfg.ollamaEndpoint,
+      modelPath: genCfg.localModelPath,
       onChunk: (text) => {
         fullText += text;
         mainWindow?.webContents.send('ai-command-chunk', text);
