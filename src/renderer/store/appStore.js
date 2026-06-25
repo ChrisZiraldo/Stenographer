@@ -45,6 +45,13 @@ export const useAppStore = create((set, get) => ({
   // ── API ────────────────────────────────────────────────────────────────────
   cursorApiKey: '',
 
+  // ── Generation model config ────────────────────────────────────────────────
+  genProvider:     'cursor',
+  cursorModel:     'composer-2.5',
+  ollamaEndpoint:  'http://localhost:11434',
+  ollamaModel:     '',
+  localModelPath:  '',
+
   // ── Theme ──────────────────────────────────────────────────────────────────
   darkMode: (() => { try { return localStorage.getItem('steno:darkMode') === 'true'; } catch { return false; } })(),
 
@@ -99,6 +106,19 @@ export const useAppStore = create((set, get) => ({
   setEq: (field, val) => set({ [field]: val }),
 
   setCursorApiKey: (key) => set({ cursorApiKey: key }),
+
+  setGenProvider:    (v) => set({ genProvider: v }),
+  setCursorModel:    (v) => set({ cursorModel: v }),
+  setOllamaEndpoint: (v) => set({ ollamaEndpoint: v }),
+  setOllamaModel:    (v) => set({ ollamaModel: v }),
+  setLocalModelPath: (v) => set({ localModelPath: v }),
+  setGenConfig: (cfg) => set({
+    ...(cfg.provider        !== undefined && { genProvider:    cfg.provider }),
+    ...(cfg.cursorModel     !== undefined && { cursorModel:    cfg.cursorModel }),
+    ...(cfg.ollamaEndpoint  !== undefined && { ollamaEndpoint: cfg.ollamaEndpoint }),
+    ...(cfg.ollamaModel     !== undefined && { ollamaModel:    cfg.ollamaModel }),
+    ...(cfg.localModelPath  !== undefined && { localModelPath: cfg.localModelPath }),
+  }),
 
   setDarkMode: (b) => {
     localStorage.setItem('steno:darkMode', String(b));

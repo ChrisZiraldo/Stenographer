@@ -2,9 +2,9 @@
 
 # Stenographer
 
-A local-first, notes-first meeting companion for macOS. Write notes while you meet, record and transcribe the conversation, then let AI merge everything into polished meeting notes. Transcription runs fully on-device — your audio never leaves your machine. The Generate step sends your notes and transcript to Cursor's AI to produce the final polished output.
+A local-first, notes-first meeting companion for macOS. Write notes while you meet, record and transcribe the conversation, then let AI merge everything into polished meeting notes. Transcription runs fully on-device — your audio never leaves your machine. The Generate step sends your notes and transcript to the configured AI backend.
 
-Powered by **Parakeet TDT V3** (on-device speech recognition via WebGPU/WASM) and the **Cursor SDK** (AI notes generation).
+Powered by **Parakeet TDT V3** (on-device speech recognition via WebGPU/WASM) and a configurable AI backend: **Cursor SDK** (cloud), **Ollama** (local server), or a **built-in local engine** via node-llama-cpp (fully offline, no dependencies, no API key).
 
 ---
 
@@ -55,7 +55,9 @@ Powered by **Parakeet TDT V3** (on-device speech recognition via WebGPU/WASM) an
 
 - macOS 13+ on Apple Silicon (M1–M4)
 - Node.js 18+
-- Cursor API key from [cursor.com/dashboard/integrations](https://cursor.com/dashboard/integrations)
+- **Cursor API key** (cloud generation) from [cursor.com/dashboard/integrations](https://cursor.com/dashboard/integrations), **or**
+- **Ollama** (local server, no API key) from [ollama.com](https://ollama.com), **or**
+- **Built-in local engine** — no dependencies, no API key; download a GGUF model from within the app (see Setup below)
 
 > **Call audio capture** requires the *Screen & System Audio Recording* permission (macOS 13+). On macOS 14.2+ this is backed by the CoreAudio Tap API — no virtual audio device or Zoom changes needed. The OS will prompt for permission on first use.
 
@@ -63,12 +65,32 @@ Powered by **Parakeet TDT V3** (on-device speech recognition via WebGPU/WASM) an
 
 ## One-time setup
 
-### 1 · Configure your API key
+### 1 · Configure your AI backend
+
+**Option A — Cursor (cloud)**
 
 ```bash
 cp .env.example .env
 # Edit .env and set CURSOR_API_KEY=cursor_...
 ```
+
+Or skip the `.env` and enter your key in **Settings → Cursor API Key** after launch.
+
+**Option B — Ollama (local server, no API key)**
+
+1. Install Ollama from [ollama.com](https://ollama.com) and pull a model:
+   ```bash
+   ollama pull llama3.2
+   ```
+2. Open **Settings → AI Model**, switch the provider to **Ollama (local)**, and select your model.
+
+**Option C — Built-in local engine (fully offline, no dependencies)**
+
+No separate server needed. Uses [node-llama-cpp](https://github.com/withcatai/node-llama-cpp) with Metal GPU acceleration on Apple Silicon.
+
+1. Open **Settings → AI Model**, switch the provider to **Local (built-in)**.
+2. Click **Download** next to a recommended model (~2 GB, stored in `~/Library/Application Support/Stenographer/models/`), or click **Import .gguf from disk** to use a model you already have.
+3. Select the downloaded model — generation will run entirely on-device.
 
 ### 2 · Install and start
 

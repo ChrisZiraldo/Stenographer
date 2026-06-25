@@ -1,19 +1,21 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 // ── Streaming chunk handlers ──────────────────────────────────────────────────
-let _notesChunkCb        = null;
-let _summaryChunkCb      = null;
-let _mergeChunkCb        = null;
-let _aiCommandChunkCb    = null;
-let _devNavigateCb       = null;
-let _triggerFileImportCb = null;
+let _notesChunkCb           = null;
+let _summaryChunkCb         = null;
+let _mergeChunkCb           = null;
+let _aiCommandChunkCb       = null;
+let _devNavigateCb          = null;
+let _triggerFileImportCb    = null;
+let _modelDownloadProgressCb = null;
 
-ipcRenderer.on('notes-chunk',          (_e, text)    => _notesChunkCb?.(text));
-ipcRenderer.on('summary-chunk',        (_e, text)    => _summaryChunkCb?.(text));
-ipcRenderer.on('merge-chunk',          (_e, text)    => _mergeChunkCb?.(text));
-ipcRenderer.on('ai-command-chunk',     (_e, text)    => _aiCommandChunkCb?.(text));
-ipcRenderer.on('dev:navigate',         (_e, payload) => _devNavigateCb?.(payload));
-ipcRenderer.on('trigger-file-import',  ()            => _triggerFileImportCb?.());
+ipcRenderer.on('notes-chunk',              (_e, text)    => _notesChunkCb?.(text));
+ipcRenderer.on('summary-chunk',            (_e, text)    => _summaryChunkCb?.(text));
+ipcRenderer.on('merge-chunk',              (_e, text)    => _mergeChunkCb?.(text));
+ipcRenderer.on('ai-command-chunk',         (_e, text)    => _aiCommandChunkCb?.(text));
+ipcRenderer.on('dev:navigate',             (_e, payload) => _devNavigateCb?.(payload));
+ipcRenderer.on('trigger-file-import',      ()            => _triggerFileImportCb?.());
+ipcRenderer.on('model-download-progress',  (_e, payload) => _modelDownloadProgressCb?.(payload));
 
 contextBridge.exposeInMainWorld('api', {
   // ── File I/O ───────────────────────────────────────────────────────────────
@@ -24,6 +26,20 @@ contextBridge.exposeInMainWorld('api', {
   // ── Settings ───────────────────────────────────────────────────────────────
   getApiKey: ()    => ipcRenderer.invoke('settings:getApiKey'),
   setApiKey: (key) => ipcRenderer.invoke('settings:setApiKey', key),
+
+  getGenConfig:     ()         => ipcRenderer.invoke('settings:getGenConfig'),
+  setGenConfig:     (cfg)      => ipcRenderer.invoke('settings:setGenConfig', cfg),
+  listOllamaModels: (endpoint) => ipcRenderer.invoke('settings:listOllamaModels', endpoint),
+
+  // ── Local model management ────────────────────────────────────────────────
+  listModels:           ()        => ipcRenderer.invoke('models:list'),
+  importModel:          ()        => ipcRenderer.invoke('models:import'),
+  downloadModel:        (modelId)          => ipcRenderer.invoke('models:download', modelId),
+  downloadModelUrl:     (url, filename)    => ipcRenderer.invoke('models:downloadUrl', { url, filename }),
+  cancelModelDownload:  (modelId)          => ipcRenderer.invoke('models:cancelDownload', modelId),
+  deleteModel:          (path)    => ipcRenderer.invoke('models:delete', path),
+  onModelDownloadProgress:  (cb) => { _modelDownloadProgressCb = cb; },
+  offModelDownloadProgress: ()   => { _modelDownloadProgressCb = null; },
 
   // ── AI generation ──────────────────────────────────────────────────────────
   generateNotes:   (args) => ipcRenderer.invoke('generate-notes', args),

@@ -155,6 +155,12 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
   const [isAiRunning, setIsAiRunning] = useState(false);
   const debounceRef    = useRef(null);
   const editorRef      = useRef(null);
+  // True once the user has actually typed something in the current meeting.
+  // Gates flush-on-unmount saves so an un-hydrated/empty editor can never
+  // overwrite saved notes — this guards against React StrictMode (which does
+  // mount→unmount→remount) and against switching meetings without typing (which
+  // would otherwise flush stale content from the previous meeting). [C8]
+  const hasEditedRef = useRef(false);
   // Keep meetingId and slash state in refs so debounced/handler callbacks
   // always read the current value without capturing stale closures.
   const meetingIdRef          = useRef(meetingId);
@@ -202,6 +208,10 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
     onUpdate: ({ editor }) => {
       const json = editor.getJSON();
       const text = editor.getText();
+
+      // Mark dirty on every real user edit. onUpdate only fires for actual
+      // typing — programmatic setContent/clearContent use emitUpdate:false. [C8]
+      hasEditedRef.current = true;
 
       // Snapshot meetingId at schedule time so the debounce always writes to the
       // correct meeting even if meetingId changes before the timeout fires. [C1]
@@ -269,8 +279,11 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
     const capturedMid = meetingId;
     return () => {
       clearTimeout(debounceRef.current);
+      // Only flush when the user actually typed something in this meeting.
+      // An un-hydrated editor (StrictMode remount) or a meeting the user
+      // opened but never edited must not overwrite saved notes. [C8]
       const ed = editorRef.current;
-      if (ed && !ed.isDestroyed && capturedMid) {
+      if (ed && !ed.isDestroyed && capturedMid && hasEditedRef.current) {
         const json = ed.getJSON();
         const text = ed.getText();
         void window.api.db.saveNoteDoc(capturedMid, {
@@ -288,7 +301,8 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
       clearTimeout(debounceRef.current);
       const ed = editorRef.current;
       const mid = meetingIdRef.current;
-      if (ed && !ed.isDestroyed && mid) {
+      // Only flush when the user actually typed something. [C8]
+      if (ed && !ed.isDestroyed && mid && hasEditedRef.current) {
         const json = ed.getJSON();
         const text = ed.getText();
         void window.api.db.saveNoteDoc(mid, {
@@ -357,6 +371,9 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
     if (!initialDoc || initialDoc === '{}') {
       // On meeting switch with empty doc, explicitly clear the editor
       editor.commands.clearContent(false);
+      // Programmatic load is not a user edit — reset dirty flag so the unmount
+      // flush won't save this blank state over the DB. [C8]
+      hasEditedRef.current = false;
       return;
     }
     try {
@@ -368,6 +385,8 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
         // Parsed but not a doc node — clear so stale content doesn't bleed through [C4]
         editor.commands.clearContent(false);
       }
+      // Programmatic content load is not a user edit — reset dirty flag. [C8]
+      hasEditedRef.current = false;
     } catch { /* raw text — leave as-is */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingId, initialDoc, editor]);

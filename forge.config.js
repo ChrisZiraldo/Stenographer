@@ -10,6 +10,8 @@ module.exports = {
     asarUnpack: [
       'src/generate-notes.cjs',
       'node_modules/@cursor/**',
+      'node_modules/node-llama-cpp/**',
+      'node_modules/@node-llama-cpp/**',
     ],
     name: 'Stenographer',
     icon: 'assets/icon',
@@ -18,7 +20,7 @@ module.exports = {
     },
   },
   rebuildConfig: {
-    extraModules: ['better-sqlite3'],
+    extraModules: ['better-sqlite3', 'node-llama-cpp'],
   },
   makers: [
     { name: '@electron-forge/maker-zip', platforms: ['darwin'] },
