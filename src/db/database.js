@@ -132,6 +132,25 @@ function runMigrations(db) {
     }
     db.exec(`INSERT OR REPLACE INTO schema_version(version) VALUES (3);`);
   }
+
+  if (currentVersion < 4) {
+    db.exec(`
+      -- ── Custom Templates ───────────────────────────────────────────────────
+      CREATE TABLE IF NOT EXISTS templates (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        doc_json   TEXT NOT NULL DEFAULT '{}',
+        source     TEXT NOT NULL DEFAULT 'user',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    const meetingCols = db.prepare("PRAGMA table_info(meetings)").all().map((c) => c.name);
+    if (!meetingCols.includes('template_type')) {
+      db.exec(`ALTER TABLE meetings ADD COLUMN template_type TEXT;`);
+    }
+    db.exec(`INSERT OR REPLACE INTO schema_version(version) VALUES (4);`);
+  }
 }
 
 export function closeDb() {

@@ -85,7 +85,7 @@ function FormatToolbar({ editor, onTemplate }) {
       flexShrink: 0,
     }}>
       {/* Template picker */}
-      {onTemplate && <TemplateMenu onSelect={onTemplate} />}
+      {onTemplate && <TemplateMenu onSelect={onTemplate} editor={editor} />}
 
       {onTemplate && <Divider />}
 

@@ -450,7 +450,7 @@ export function Workspace() {
         setGeneratedNotes(generatedRef.current);
       });
 
-      const res = await window.api.generateMerge({ humanNotesText: humanText, transcriptText, meetingId: activeMeetingId });
+      const res = await window.api.generateMerge({ humanNotesText: humanText, transcriptText, meetingId: activeMeetingId, templateType: meeting?.template_type });
       if (!res.ok) {
         // Restore previous generated notes so user doesn't lose the last good output. [W3]
         generatedRef.current = prevGenerated;
@@ -498,9 +498,13 @@ export function Workspace() {
     liveHumanDocTextRef.current = text;
   }, []);
 
-  const handleTemplate = useCallback((doc) => {
+  const handleTemplate = useCallback((doc, label) => {
     editorInstanceRef.current?.commands.setContent(doc);
-  }, []);
+    if (activeMeetingId && label) {
+      window.api.db.updateMeeting(activeMeetingId, { template_type: label }).catch(() => {});
+      setMeeting((m) => m ? { ...m, template_type: label } : m);
+    }
+  }, [activeMeetingId]);
 
   const handleExportMarkdown = () => {
     const text = notesView === 'generated' ? generatedNotes : '';

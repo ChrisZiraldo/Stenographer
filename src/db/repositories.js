@@ -69,7 +69,7 @@ export function createMeeting({ title = 'Untitled Meeting', status = 'idle' } = 
 
 export function updateMeeting(id, fields) {
   const db = getDb();
-  const allowed = ['title', 'status', 'started_at', 'ended_at', 'folder_path', 'audio_path', 'duration_ms', 'tags'];
+  const allowed = ['title', 'status', 'started_at', 'ended_at', 'folder_path', 'audio_path', 'duration_ms', 'tags', 'starred', 'template_type'];
   // Skip keys whose value is undefined so callers can safely pass optional
   // fields (e.g. started_at: isResume ? undefined : now) without binding errors.
   const sets = Object.keys(fields)
@@ -459,4 +459,39 @@ export function saveSpaces(spaces) {
     list.forEach((s, i) => upsert.run({ name: s.name, icon: s.icon, color: s.color, bg: s.bg, sort_order: i }));
   });
   tx(spaces);
+}
+
+// ── Custom Templates ───────────────────────────────────────────────────────────
+
+/**
+ * Returns all user-created templates ordered by sort_order then created_at.
+ */
+export function getTemplates() {
+  const db = getDb();
+  return db.prepare('SELECT id, name, doc_json, source, sort_order, created_at FROM templates ORDER BY sort_order ASC, created_at ASC').all();
+}
+
+/**
+ * Upserts a custom template.
+ * template: { id, name, doc_json }
+ */
+export function saveTemplate({ id, name, doc_json }) {
+  const db = getDb();
+  const now = Date.now();
+  const count = db.prepare('SELECT COUNT(*) AS n FROM templates').get().n;
+  db.prepare(`
+    INSERT INTO templates (id, name, doc_json, source, sort_order, created_at)
+    VALUES (?, ?, ?, 'user', ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name       = excluded.name,
+      doc_json   = excluded.doc_json
+  `).run(id, name, doc_json, count, now);
+}
+
+/**
+ * Deletes a user-created template by id.
+ */
+export function deleteTemplate(id) {
+  const db = getDb();
+  db.prepare("DELETE FROM templates WHERE id = ? AND source = 'user'").run(id);
 }

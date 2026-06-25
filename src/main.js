@@ -112,7 +112,7 @@ const modelsDir = join(dataDir, 'models');
 const RECOMMENDED_MODELS = [
   {
     id: 'qwen2.5-7b-q4',
-    name: 'Qwen 2.5 7B Instruct (Q4, ~4.7 GB)',
+    name: 'Qwen 2.5 7B Instruct (Q4, ~4.7 GB) (Recommended)',
     filename: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf',
     url: 'https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf',
     sizeBytes: 4683542528,
@@ -715,14 +715,14 @@ ipcMain.handle('generate-notes', async (_event, { transcriptText, notesPath, mee
 });
 
 // ── IPC: generate merge (human notes + transcript) ────────────────────────────
-ipcMain.handle('generate-merge', async (_event, { humanNotesText, transcriptText, meetingId }) => {
+ipcMain.handle('generate-merge', async (_event, { humanNotesText, transcriptText, meetingId, templateType }) => {
   const genCfg = getGenConfig();
   const apiKey = getStoredApiKey();
   if (genCfg.provider === 'cursor' && !apiKey) {
     return { ok: false, error: 'Cursor API key not set. Add it in Settings.' };
   }
 
-  const prompt = buildMergePrompt(humanNotesText, transcriptText);
+  const prompt = buildMergePrompt(humanNotesText, transcriptText, templateType);
   const projectRoot = app.getAppPath();
 
   return new Promise((resolve) => {
@@ -943,6 +943,9 @@ dbHandle('db:replaceSegments', ({ meetingId, segments }) => { repo.replaceSegmen
 dbHandle('db:getSegments',  (meetingId) => repo.getSegments(meetingId));
 dbHandle('db:getSpaces',    () => repo.getSpaces());
 dbHandle('db:saveSpaces',   (spaces) => { repo.saveSpaces(spaces); return { ok: true }; });
+dbHandle('db:getTemplates',   () => repo.getTemplates());
+dbHandle('db:saveTemplate',   (t) => { repo.saveTemplate(t); return { ok: true }; });
+dbHandle('db:deleteTemplate', (id) => { repo.deleteTemplate(id); return { ok: true }; });
 dbHandle('db:toggleStar',   (id) => ({ starred: repo.toggleMeetingStar(id) }));
 dbHandle('db:listTodos',       (opts)                => repo.listTodos(opts));
 dbHandle('db:upsertTodo',      (todo)                => ({ id: repo.upsertTodo(todo) }));

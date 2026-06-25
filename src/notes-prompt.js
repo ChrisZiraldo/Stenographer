@@ -52,11 +52,15 @@ ${transcriptText}
  * asks the model to merge them (respecting human structure, filling gaps from transcript,
  * extracting action items).
  */
-export function buildMergePrompt(humanNotesText, transcriptText) {
+export function buildMergePrompt(humanNotesText, transcriptText, templateType) {
+  const meetingTypeHint = templateType
+    ? `\nThis was a "${templateType}" meeting. Structure and label the notes accordingly.\n`
+    : '';
+
   return `You are a precise meeting-notes assistant. You have two inputs:
 1. HUMAN NOTES: notes written by a human during the meeting (may be incomplete or rough)
 2. TRANSCRIPT: the full meeting transcript
-
+${meetingTypeHint}
 Your job is to produce polished final meeting notes that:
 - Respect and preserve the human's structure and wording where possible
 - Fill in gaps, decisions, and context from the transcript that the human missed
