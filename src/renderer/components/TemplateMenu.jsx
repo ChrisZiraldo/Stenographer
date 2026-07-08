@@ -217,8 +217,14 @@ export function TemplateMenu({ onSelect, editor }) {
 
   const handleDelete = async (e, id) => {
     e.stopPropagation();
-    await window.api.db.deleteTemplate(id).catch(() => {});
-    persistCustom(customTemplates.filter((t) => t.id !== id));
+    try {
+      const res = await window.api.db.deleteTemplate(id);
+      if (res?.ok !== false) {
+        persistCustom(customTemplates.filter((t) => t.id !== id));
+      }
+    } catch (err) {
+      console.warn('[TemplateMenu] deleteTemplate failed:', err.message);
+    }
   };
 
   const handleSaveCurrent = async () => {
@@ -226,9 +232,15 @@ export function TemplateMenu({ onSelect, editor }) {
     if (!name || !editor) return;
     const id = `tpl_${Date.now()}`;
     const doc_json = JSON.stringify(editor.getJSON());
-    await window.api.db.saveTemplate({ id, name, doc_json }).catch(() => {});
-    persistCustom([...customTemplates, { id, name, doc_json }]);
-    resetFooter();
+    try {
+      const res = await window.api.db.saveTemplate({ id, name, doc_json });
+      if (res?.ok !== false) {
+        persistCustom([...customTemplates, { id, name, doc_json }]);
+        resetFooter();
+      }
+    } catch (err) {
+      console.warn('[TemplateMenu] saveTemplate failed:', err.message);
+    }
   };
 
   const handleGenerate = async () => {

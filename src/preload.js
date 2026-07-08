@@ -4,6 +4,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 let _notesChunkCb           = null;
 let _summaryChunkCb         = null;
 let _mergeChunkCb           = null;
+let _mergeStatusCb          = null;
 let _aiCommandChunkCb       = null;
 let _devNavigateCb          = null;
 let _triggerFileImportCb    = null;
@@ -12,6 +13,7 @@ let _modelDownloadProgressCb = null;
 ipcRenderer.on('notes-chunk',              (_e, text)    => _notesChunkCb?.(text));
 ipcRenderer.on('summary-chunk',            (_e, text)    => _summaryChunkCb?.(text));
 ipcRenderer.on('merge-chunk',              (_e, text)    => _mergeChunkCb?.(text));
+ipcRenderer.on('merge-status',             (_e, message) => _mergeStatusCb?.(message));
 ipcRenderer.on('ai-command-chunk',         (_e, text)    => _aiCommandChunkCb?.(text));
 ipcRenderer.on('dev:navigate',             (_e, payload) => _devNavigateCb?.(payload));
 ipcRenderer.on('trigger-file-import',      ()            => _triggerFileImportCb?.());
@@ -55,6 +57,8 @@ contextBridge.exposeInMainWorld('api', {
   offSummaryChunk:   ()   => { _summaryChunkCb = null; },
   onMergeChunk:      (cb) => { _mergeChunkCb = cb; },
   offMergeChunk:     ()   => { _mergeChunkCb = null; },
+  onMergeStatus:     (cb) => { _mergeStatusCb = cb; },
+  offMergeStatus:    ()   => { _mergeStatusCb = null; },
   onAiCommandChunk:  (cb) => { _aiCommandChunkCb = cb; },
   offAiCommandChunk: ()   => { _aiCommandChunkCb = null; },
 
@@ -73,9 +77,10 @@ contextBridge.exposeInMainWorld('api', {
     createMeeting:  (opts)             => ipcRenderer.invoke('db:createMeeting', opts),
     updateMeeting:  (id, fields)       => ipcRenderer.invoke('db:updateMeeting', { id, fields }),
     deleteMeeting:  (id)               => ipcRenderer.invoke('db:deleteMeeting', id),
-    saveNoteDoc:    (meetingId, doc)   => ipcRenderer.invoke('db:saveNoteDoc', { meetingId, ...doc }),
+    saveNoteDoc:    (meetingId, doc)   => ipcRenderer.invoke('db:saveNoteDoc', { meetingId, humanDocJson: doc?.humanDocJson, humanDocText: doc?.humanDocText }),
     saveSummary:    (meetingId, md)    => ipcRenderer.invoke('db:saveSummary', { meetingId, summaryMd: md }),
     saveGenerated:  (meetingId, md)    => ipcRenderer.invoke('db:saveGenerated', { meetingId, generatedMd: md }),
+    saveFinalDoc:   (meetingId, doc)   => ipcRenderer.invoke('db:saveFinalDoc', { meetingId, finalDocJson: doc?.finalDocJson, finalDocText: doc?.finalDocText }),
     upsertSegments:  (meetingId, segs)  => ipcRenderer.invoke('db:upsertSegments',  { meetingId, segments: segs }),
     replaceSegments: (meetingId, segs)  => ipcRenderer.invoke('db:replaceSegments', { meetingId, segments: segs }),
     getSegments:     (meetingId)        => ipcRenderer.invoke('db:getSegments', meetingId),

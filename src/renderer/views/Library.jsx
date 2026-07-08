@@ -608,7 +608,7 @@ function Sidebar({ meetings, activeTag, setActiveTag, searchQuery, setSearchQuer
                 >
                   <button
                     onClick={() => setActiveTag(isActive ? null : tag)}
-                    className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 text-[12.5px] transition-all cursor-grab active:cursor-grabbing text-left ${
+                    className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 text-[12.5px] transition-all cursor-pointer active:cursor-grabbing text-left ${
                       isTagDrop
                         ? 'scale-[1.02] rounded-[10px]'
                         : isActive
@@ -784,7 +784,9 @@ export function Library() {
 
       let dbResults = [];
       try {
-        dbResults = (await window.api.db.search(sanitizedFts)) ?? [];
+        const raw = (await window.api.db.search(sanitizedFts)) ?? [];
+        // searchMeetings returns {ftsError:true} on syntax errors — treat as empty. [E1]
+        dbResults = Array.isArray(raw) ? raw : [];
       } catch {
         // FTS failed; fall through to client-only results
       }
@@ -883,7 +885,7 @@ export function Library() {
     <div
       className="flex h-full relative"
       style={{ background: 'var(--bg-page)' }}
-      onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+      onDragOver={(e) => { e.preventDefault(); if (e.dataTransfer.types.includes('Files')) setIsDragOver(true); }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setIsDragOver(false); }}
       onDrop={(e) => {
         e.preventDefault();
@@ -943,7 +945,7 @@ export function Library() {
           <div className="no-drag flex items-center gap-2 pb-0.5">
             <button
               onClick={() => fileInputRef.current?.click()}
-              style={{ padding: '8px 16px', fontSize: 13, fontWeight: 500, borderRadius: 999, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--ink-faint)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 7, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', transition: 'background 0.15s' }}
+              style={{ padding: '8px 16px', fontSize: 13, fontWeight: 500, borderRadius: 999, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--ink)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 7, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', transition: 'background 0.15s' }}
               onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-surface2)'}
               onMouseLeave={e => e.currentTarget.style.background = 'var(--bg-elevated)'}
               title="Import an audio file to transcribe (⌘O)"

@@ -2,7 +2,7 @@ import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, session, sh
 
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import { dirname, isAbsolute, join, resolve, sep } from 'path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'path';
 import http from 'http';
 import https from 'https';
 import { writeFile, mkdir, rm, readFile, copyFile, stat } from 'fs/promises';
@@ -223,8 +223,10 @@ if (!gotLock) {
 }
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
+// NOTE: whenReady is inside the gotLock guard below so a second instance that
+// calls app.quit() never briefly opens the same SQLite WAL database. [M1]
 
-app.whenReady().then(() => {
+if (gotLock) app.whenReady().then(() => {
   // Init DB before creating window
   initDb();
 
@@ -350,7 +352,7 @@ function killPriorJobChild(jobType) {
 }
 
 // ── Shared streaming agent helper ─────────────────────────────────────────────
-function spawnStreamingAgent({ prompt, apiKey, projectRoot, jobType, provider, model, endpoint, modelPath, onChunk, onDone, onError }) {
+function spawnStreamingAgent({ prompt, apiKey, projectRoot, jobType, provider, model, endpoint, modelPath, onChunk, onDone, onError, onStatus }) {
   // Kill any in-flight job of the same type before spawning a replacement.
   if (jobType) killPriorJobChild(jobType);
 
@@ -395,6 +397,7 @@ function spawnStreamingAgent({ prompt, apiKey, projectRoot, jobType, provider, m
         if (msg.type === 'chunk' && msg.text) onChunk(msg.text);
         else if (msg.type === 'done') done();
         else if (msg.type === 'error') fail(msg.error);
+        else if (msg.type === 'status' && msg.message) onStatus?.(msg.message);
       } catch { /* skip malformed lines */ }
     }
   });
@@ -615,11 +618,20 @@ ipcMain.handle('models:download', async (_event, modelId) => {
 
 ipcMain.handle('models:downloadUrl', async (_event, { url, filename }) => {
   if (!url || typeof url !== 'string') return { ok: false, error: 'No URL provided' };
-  const name = filename || url.split('/').pop().split('?')[0] || 'model.gguf';
+  // Sanitize: strip any path components so a crafted filename cannot escape modelsDir. [M17]
+  const rawName = filename || url.split('/').pop().split('?')[0] || 'model.gguf';
+  const name = basename(rawName);
+  if (!name || name.includes('..') || name.includes(sep)) {
+    return { ok: false, error: 'Invalid filename' };
+  }
   const modelId = `custom:${name}`;
 
   await mkdir(modelsDir, { recursive: true });
-  const destPath = join(modelsDir, name);
+  const destPath = resolve(join(modelsDir, name));
+  // Verify resolved path stays inside modelsDir
+  if (!destPath.startsWith(modelsDir + sep)) {
+    return { ok: false, error: 'Invalid filename' };
+  }
   const tmpPath  = destPath + '.download';
   await rm(tmpPath, { force: true });
 
@@ -759,6 +771,7 @@ ipcMain.handle('generate-merge', async (_event, { humanNotesText, transcriptText
       },
       onDone: () => settle(fullText.trim() ? { ok: true } : { ok: false, error: 'No output produced' }),
       onError: (error) => settle({ ok: false, error }),
+      onStatus: (message) => mainWindow?.webContents.send('merge-status', message),
     });
   });
 });
@@ -909,8 +922,14 @@ dbHandle('db:updateMeeting',({ id, fields }) => {
   if (!id || !fields || typeof fields !== 'object') throw new Error('id and fields required');
   // Run audio_path through resolveDataPath regardless of whether it looks absolute,
   // using path.isAbsolute() for correct cross-platform behavior. [M6, M11]
+  // Reject rather than silently persist a bad path — keeping an invalid path in the DB
+  // can expose arbitrary local files via file:// URL later. [M18]
   if (fields.audio_path) {
-    try { fields.audio_path = resolveDataPath(fields.audio_path); } catch { /* leave as-is */ }
+    try {
+      fields.audio_path = resolveDataPath(fields.audio_path);
+    } catch (err) {
+      return { ok: false, error: `Invalid audio_path: ${err.message}` };
+    }
   }
   repo.updateMeeting(id, fields);
   return { ok: true };
@@ -938,6 +957,7 @@ dbHandle('db:saveNoteDoc',  ({ meetingId, humanDocJson, humanDocText }) => {
 });
 dbHandle('db:saveSummary',  ({ meetingId, summaryMd }) => { repo.saveSummary(meetingId, summaryMd); return { ok: true }; });
 dbHandle('db:saveGenerated', ({ meetingId, generatedMd }) => { repo.saveGeneratedNotes(meetingId, generatedMd); return { ok: true }; });
+dbHandle('db:saveFinalDoc', ({ meetingId, finalDocJson, finalDocText }) => { repo.saveFinalDoc(meetingId, { finalDocJson, finalDocText }); return { ok: true }; });
 dbHandle('db:upsertSegments',  ({ meetingId, segments }) => { repo.upsertSegments(meetingId, segments);  return { ok: true }; });
 dbHandle('db:replaceSegments', ({ meetingId, segments }) => { repo.replaceSegments(meetingId, segments); return { ok: true }; });
 dbHandle('db:getSegments',  (meetingId) => repo.getSegments(meetingId));

@@ -79,7 +79,9 @@ async function runCursor({ apiKey, cwd, model, prompt }) {
 
     for await (const event of run.stream()) {
       if (event.type === 'assistant') {
-        for (const block of event.message.content) {
+        // Guard: some SDK versions may return a non-iterable content field. [G1]
+        const blocks = Array.isArray(event.message?.content) ? event.message.content : [];
+        for (const block of blocks) {
           if (block.type === 'text' && block.text) {
             emit({ type: 'chunk', text: block.text });
           }
@@ -203,10 +205,15 @@ async function runLocal({ modelPath, prompt }) {
 
   let llama, llamaModel, context, session;
   try {
-    llama = await getLlama({ gpu: 'metal' });
+    emit({ type: 'status', message: 'Loading model into memory…' });
+    // Select GPU backend by platform — 'metal' on macOS, auto elsewhere. [G2]
+    const gpuBackend = process.platform === 'darwin' ? 'metal' : 'auto';
+    llama = await getLlama({ gpu: gpuBackend });
     llamaModel = await llama.loadModel({ modelPath });
+    emit({ type: 'status', message: 'Initialising context…' });
     context = await llamaModel.createContext();
     session = new LlamaChatSession({ contextSequence: context.getSequence() });
+    emit({ type: 'status', message: 'Generating…' });
 
     await session.prompt(prompt, {
       onTextChunk(text) {

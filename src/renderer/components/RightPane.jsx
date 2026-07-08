@@ -101,14 +101,15 @@ function TranscriptPanel({ segments, audioRef, isRecording, onRemoveSegment }) {
   const handleCopyAll = () => {
     const text = segments.map((s) => s.text ?? '').join('\n');
     if (!text) return;
-    navigator.clipboard.writeText(text);
-    setCopyAllDone(true);
-    setTimeout(() => setCopyAllDone(false), 2000);
+    navigator.clipboard.writeText(text).then(() => {
+      setCopyAllDone(true);
+      setTimeout(() => setCopyAllDone(false), 2000);
+    }).catch((err) => console.warn('[TranscriptPanel] copy failed:', err.message));
   };
 
   const handleCopyChunk = (e, text) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(text ?? '');
+    navigator.clipboard.writeText(text ?? '').catch((err) => console.warn('[TranscriptPanel] copy failed:', err.message));
   };
 
   const filtered = query.trim()

@@ -64,6 +64,9 @@ export function createMeeting({ title = 'Untitled Meeting', status = 'idle' } = 
     `).run(id);
   })();
 
+  // Seed FTS so the new meeting is immediately searchable by title. [H2]
+  updateFts(id);
+
   return getMeeting(id);
 }
 
@@ -101,33 +104,61 @@ export function deleteMeeting(id) {
 
 export function saveNoteDoc(meetingId, { humanDocJson, humanDocText }) {
   const db = getDb();
-  const info = db.prepare(`
-    UPDATE notes SET human_doc_json = ?, human_doc_text = ?
-    WHERE meeting_id = ?
-  `).run(
-    typeof humanDocJson === 'string' ? humanDocJson : JSON.stringify(humanDocJson),
-    humanDocText ?? '',
-    meetingId,
-  );
-  // [M17] Warn if no row was updated (unknown meetingId)
+  const json = typeof humanDocJson === 'string' ? humanDocJson : (humanDocJson != null ? JSON.stringify(humanDocJson) : '{}');
+  // Wrap note update + FTS rebuild in one transaction for atomicity. [H3]
+  let changed = false;
+  db.transaction(() => {
+    const info = db.prepare(`
+      UPDATE notes SET human_doc_json = ?, human_doc_text = ?
+      WHERE meeting_id = ?
+    `).run(json, humanDocText ?? '', meetingId);
+    if (info.changes === 0) {
+      console.warn('[DB] saveNoteDoc: no notes row for meetingId', meetingId);
+      return;
+    }
+    changed = true;
+    db.prepare('UPDATE meetings SET updated_at = ? WHERE id = ?').run(Date.now(), meetingId);
+    updateFts(meetingId);
+  })();
+  if (!changed) return;
+}
+
+export function saveSummary(meetingId, summaryMd) {
+  const db = getDb();
+  const info = db.prepare('UPDATE notes SET summary_md = ? WHERE meeting_id = ?').run(summaryMd, meetingId);
   if (info.changes === 0) {
-    console.warn('[DB] saveNoteDoc: no notes row for meetingId', meetingId);
+    console.warn('[DB] saveSummary: no notes row for meetingId', meetingId);
     return;
   }
   db.prepare('UPDATE meetings SET updated_at = ? WHERE id = ?').run(Date.now(), meetingId);
   updateFts(meetingId);
 }
 
-export function saveSummary(meetingId, summaryMd) {
+export function saveGeneratedNotes(meetingId, generatedMd) {
   const db = getDb();
-  db.prepare('UPDATE notes SET summary_md = ? WHERE meeting_id = ?').run(summaryMd, meetingId);
+  const info = db.prepare('UPDATE notes SET enhanced_md = ? WHERE meeting_id = ?').run(generatedMd, meetingId);
+  if (info.changes === 0) {
+    console.warn('[DB] saveGeneratedNotes: no notes row for meetingId', meetingId);
+    return;
+  }
   db.prepare('UPDATE meetings SET updated_at = ? WHERE id = ?').run(Date.now(), meetingId);
   updateFts(meetingId);
 }
 
-export function saveGeneratedNotes(meetingId, generatedMd) {
+export function saveFinalDoc(meetingId, { finalDocJson, finalDocText }) {
   const db = getDb();
-  db.prepare('UPDATE notes SET enhanced_md = ? WHERE meeting_id = ?').run(generatedMd, meetingId);
+  const info = db.prepare(`
+    UPDATE notes SET final_doc_json = ?, final_doc_text = ?
+    WHERE meeting_id = ?
+  `).run(
+    typeof finalDocJson === 'string' ? finalDocJson : JSON.stringify(finalDocJson),
+    finalDocText ?? '',
+    meetingId,
+  );
+  if (info.changes === 0) {
+    console.warn('[DB] saveFinalDoc: no notes row for meetingId', meetingId);
+    return;
+  }
   db.prepare('UPDATE meetings SET updated_at = ? WHERE id = ?').run(Date.now(), meetingId);
   updateFts(meetingId);
 }
@@ -300,13 +331,13 @@ export function deleteTodo(id) {
 function updateFts(meetingId) {
   const db = getDb();
   const meeting = db.prepare('SELECT title FROM meetings WHERE id = ?').get(meetingId);
-  const notes = db.prepare('SELECT human_doc_text, enhanced_md, summary_md FROM notes WHERE meeting_id = ?').get(meetingId);
+  const notes = db.prepare('SELECT human_doc_text, enhanced_md, summary_md, final_doc_text FROM notes WHERE meeting_id = ?').get(meetingId);
   const segments = db.prepare(
     'SELECT text FROM transcript_segments WHERE meeting_id = ? ORDER BY start_ms ASC'
   ).all(meetingId);
 
   const transcriptText = segments.map((s) => s.text).join(' ');
-  const notesText = [notes?.human_doc_text, notes?.enhanced_md, notes?.summary_md].filter(Boolean).join(' ');
+  const notesText = [notes?.human_doc_text, notes?.enhanced_md, notes?.summary_md, notes?.final_doc_text].filter(Boolean).join(' ');
 
   db.prepare("DELETE FROM meetings_fts WHERE meeting_id = ?").run(meetingId);
   db.prepare(`
@@ -332,7 +363,7 @@ export function searchMeetings(query, { limit = 20 } = {}) {
       WHERE meetings_fts MATCH ?
       ORDER BY rank
       LIMIT ?
-    `).all(query.trim() + '*', limit);
+    `).all(query.trim(), limit);
     return rows;
   } catch (err) {
     // Return a structured signal for invalid FTS queries so the renderer can

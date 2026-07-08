@@ -160,13 +160,13 @@ export class Recorder {
    */
   async start({ loopbackEnabled, micEnabled, micDeviceId, liveTx, meetingId }) {
     // Re-entry guard: prevent double-start or starting while dictation is active
-    if (this.isRecording || this._audioContext || this._dictationStream || this._starting) return;
+    if (this.isRecording || this._audioContext || this._dictationStream || this._starting) return false;
     this._starting = true; // [R15] block pause() while setup is in progress
 
     if (!loopbackEnabled && !micEnabled) {
       this._starting = false;
       this._emit('status', 'Enable at least one audio source in Settings.', 'error');
-      return;
+      return false;
     }
 
     if (meetingId) this.activeMeetingId = meetingId;
@@ -201,7 +201,7 @@ export class Recorder {
       await this._audioContext?.close().catch(() => {});
       this._audioContext = null;
       this._emit('status', `Audio setup failed: ${err.message}`, 'error');
-      return;
+      return false;
     }
 
     // ── Main stream: loopback (remote call) or mic (in-person) ───────────────
@@ -216,7 +216,7 @@ export class Recorder {
           'Call audio capture was denied. Enable "Screen & System Audio Recording" in System Settings → Privacy.',
           'error'
         );
-        return;
+        return false;
       }
     } else {
       // Mic-only (in-person meeting) — route through the main pipeline
@@ -234,7 +234,7 @@ export class Recorder {
         await this._audioContext.close();
         this._audioContext = null;
         this._emit('status', `Microphone error: ${err.message}`, 'error');
-        return;
+        return false;
       }
     }
 
@@ -243,11 +243,11 @@ export class Recorder {
     this._workletNode.port.onmessage = (e) => {
       if (e.data.type !== 'frame') return;
       const frame = e.data.data;
-      this.mainRecBuffer.push(frame);
-      // [R17] Warn if the recording buffer grows beyond the max duration cap
-      if (this.mainRecBuffer.length === MAX_REC_BUFFER_FRAMES) {
-        console.warn('[Recorder] recording buffer exceeds 3-hour cap; oldest frames will be dropped on WAV encode');
+      // [R17] Ring-buffer: drop oldest frame when cap is reached to bound memory.
+      if (this.mainRecBuffer.length >= MAX_REC_BUFFER_FRAMES) {
+        this.mainRecBuffer.shift();
       }
+      this.mainRecBuffer.push(frame);
       this._currentRmsLevel = this._rms(frame);
       if (this._liveTx) this._onAudioFrame(frame, this._mainVAD);
     };
@@ -272,6 +272,9 @@ export class Recorder {
         this._micWorklet = new AudioWorkletNode(this._audioContext, 'audio-downsample-processor');
         this._micWorklet.port.onmessage = (e) => {
           if (e.data.type !== 'frame') return;
+          if (this.myRecBuffer.length >= MAX_REC_BUFFER_FRAMES) {
+            this.myRecBuffer.shift();
+          }
           this.myRecBuffer.push(e.data.data);
           if (this._liveTx) this._onAudioFrame(e.data.data, this._myVAD);
         };
@@ -289,6 +292,7 @@ export class Recorder {
     this.isRecording = true;
     this._startLevelMeter();
     this._emit('status', 'Listening…', 'recording');
+    return true;
   }
 
   async pause() {
@@ -330,6 +334,8 @@ export class Recorder {
     await Promise.all(flushJobs);
     // Drain any inference still running (the flush schedules work on _inferenceChain)
     await this._inferenceChain;
+    // Drain in-flight typing animation so all segment events settle before marking stopped.
+    await this._typeChain;
 
     this.isRecording = false;
 
@@ -823,39 +829,47 @@ export class Recorder {
     }
 
     console.log('[Dictation] mic stream open, setting up AudioContext');
-    const ctx    = new AudioContext({ sampleRate: 16000 });
-    await ctx.resume();
-    console.log('[Dictation] AudioContext state:', ctx.state);
+    let ctx;
+    try {
+      ctx = new AudioContext({ sampleRate: 16000 });
+      await ctx.resume();
+      console.log('[Dictation] AudioContext state:', ctx.state);
 
-    const frames = [];
+      const frames = [];
 
-    await ctx.audioWorklet.addModule(audioProcessorUrl);
-    const source  = ctx.createMediaStreamSource(stream);
-    const worklet = new AudioWorkletNode(ctx, 'audio-downsample-processor');
+      await ctx.audioWorklet.addModule(audioProcessorUrl);
+      const source  = ctx.createMediaStreamSource(stream);
+      const worklet = new AudioWorkletNode(ctx, 'audio-downsample-processor');
 
-    let frameCount = 0;
-    worklet.port.onmessage = (e) => {
-      if (e.data.type === 'frame') {
-        frames.push(e.data.data);
-        frameCount++;
-        if (frameCount === 1) console.log('[Dictation] first frame received, data type:', e.data.data?.constructor?.name, 'length:', e.data.data?.length);
-      }
-    };
+      let frameCount = 0;
+      worklet.port.onmessage = (e) => {
+        if (e.data.type === 'frame') {
+          frames.push(e.data.data);
+          frameCount++;
+          if (frameCount === 1) console.log('[Dictation] first frame received, data type:', e.data.data?.constructor?.name, 'length:', e.data.data?.length);
+        }
+      };
 
-    worklet.port.onerror = (e) => console.error('[Dictation] worklet port error:', e);
+      worklet.port.onerror = (e) => console.error('[Dictation] worklet port error:', e);
 
-    source.connect(worklet);
-    const sink = ctx.createGain();
-    sink.gain.value = 0;
-    worklet.connect(sink);
-    sink.connect(ctx.destination);
+      source.connect(worklet);
+      const sink = ctx.createGain();
+      sink.gain.value = 0;
+      worklet.connect(sink);
+      sink.connect(ctx.destination);
 
-    console.log('[Dictation] audio graph ready, listening…');
-    this._dictationStream  = stream;
-    this._dictationContext = ctx;
-    this._dictationWorklet = worklet;
-    this._dictationFrames  = frames;
-    return true;
+      console.log('[Dictation] audio graph ready, listening…');
+      this._dictationStream  = stream;
+      this._dictationContext = ctx;
+      this._dictationWorklet = worklet;
+      this._dictationFrames  = frames;
+      return true;
+    } catch (err) {
+      console.error('[Dictation] audio graph setup failed:', err.message);
+      stream.getTracks().forEach((t) => t.stop());
+      await ctx?.close().catch(() => {});
+      return false;
+    }
   }
 
   async stopDictation() {

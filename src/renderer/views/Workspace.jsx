@@ -1,11 +1,12 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react';
 import {
   ArrowLeft, Mic, MicOff, Settings, Sparkles,
-  Loader, Download, Plus, X as XIcon
+  Loader, Download, Plus, X as XIcon, FileEdit
 } from 'lucide-react';
 import { useAppStore } from '../store/appStore.js';
 import { recorder } from '../engine/recorder.js';
 import { NotesEditor } from '../components/NotesEditor.jsx';
+const FinalNotesEditor = lazy(() => import('../components/FinalNotesEditor.jsx').then((m) => ({ default: m.FinalNotesEditor })));
 import { RightPane } from '../components/RightPane.jsx';
 import { AudioBars } from '../components/AudioBars.jsx';
 import { SettingsDrawer } from '../components/SettingsDrawer.jsx';
@@ -225,11 +226,14 @@ export function Workspace() {
   const [settingsOpen, setSettings] = useState(false);
   const [startedAt, setStartedAt]   = useState(null);
   const [initialDoc, setInitialDoc] = useState('{}');
+  const [finalInitialDoc, setFinalInitialDoc] = useState('{}');
   const [exportDone, setExportDone] = useState(false);
-  const [isDictating, setIsDictating]       = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [dictationError, setDictationError] = useState(null);
+  const [isDictating, setIsDictating]         = useState(false);
+  const [isTranscribing, setIsTranscribing]   = useState(false);
+  const [dictationError, setDictationError]   = useState(null);
+  const [generateStatus, setGenerateStatus]   = useState('');
   const editorInstanceRef           = useRef(null);
+  const finalEditorRef              = useRef(null);
   const audioRef                    = useRef(null);
   const generatedRef                = useRef('');
   const summaryTimerRef             = useRef(null);
@@ -254,9 +258,14 @@ export function Workspace() {
     // Clear stale workspace state before populating from DB, so switching
     // meetings doesn't flash the previous meeting's content.
     setInitialDoc('{}');
+    setFinalInitialDoc('{}');
     setGeneratedNotes('');
     generatedRef.current = '';
     liveHumanDocTextRef.current = '';
+    // Clear live transcript/summary to stop cross-meeting flash in the right pane. [B4]
+    setLiveSegments([]);
+    setLiveTranscript('');
+    setLiveSummary('');
 
     const data = await window.api.db.getMeeting(id);
     if (useAppStore.getState().activeMeetingId !== id) return;
@@ -275,6 +284,13 @@ export function Workspace() {
     if (data?.notes?.enhanced_md) {
       setGeneratedNotes(data.notes.enhanced_md);
       generatedRef.current = data.notes.enhanced_md;
+    }
+    const hasFinal = data?.notes?.final_doc_json && data.notes.final_doc_json !== '{}';
+    if (hasFinal) {
+      setFinalInitialDoc(data.notes.final_doc_json);
+      setNotesView('final');
+    } else {
+      setNotesView('human');
     }
     setLiveSummary(data?.notes?.summary_md ?? '');
 
@@ -383,10 +399,11 @@ export function Workspace() {
         recorder.sessionTimestamp = recorder._timestamp();
         setLiveSegments([]); setLiveTranscript(''); setLiveSummary('');
       }
-      await recorder.start({
+      const started = await recorder.start({
         loopbackEnabled, micEnabled, micDeviceId, liveTx: liveTxEnabled,
         meetingId: activeMeetingId,
       });
+      if (!started) return; // recorder emits its own error status
       const now = Date.now();
       if (!isResume) setStartedAt(now);
       await window.api.db.updateMeeting(activeMeetingId, {
@@ -405,10 +422,16 @@ export function Workspace() {
 
   const handleGenerate = useCallback(async () => {
     if (!activeMeetingId) return;
-    setNotesView('generated');
     setIsGenerating(true);
 
+    // Snapshot state before mutating so we can restore on any failure. [W3]
+    let prevGenerated = generatedRef.current;
+    const prevNotesView = useAppStore.getState().notesView;
+
     try {
+      // Read fresh segments from store to avoid stale closure. [B5]
+      const currentLiveSegments = useAppStore.getState().liveSegments;
+
       if (recorder.mainRecBuffer.length > 0) {
         // Full re-transcription from raw audio buffer; result is a list of timed chunks.
         const chunks = await recorder.enhanceTranscript();
@@ -424,8 +447,8 @@ export function Workspace() {
             : [{ text: recorder.currentTranscript, speaker: null, createdAt: Date.now() }];
           await window.api.db.replaceSegments(activeMeetingId, segRows);
         }
-      } else if (liveSegments.length > 0 && !recorder.currentTranscript) {
-        recorder.currentTranscript = liveSegments.map((s) => s.text).join(' ');
+      } else if (currentLiveSegments.length > 0 && !recorder.currentTranscript) {
+        recorder.currentTranscript = currentLiveSegments.map((s) => s.text).join(' ');
       }
 
       const meetingData    = await window.api.db.getMeeting(activeMeetingId);
@@ -438,29 +461,43 @@ export function Workspace() {
       })();
       const savedSegments  = recorder.currentTranscript ? [] : await window.api.db.getSegments(activeMeetingId);
       const transcriptText = recorder.currentTranscript ||
-        liveSegments.map((s) => s.text).join(' ') ||
+        currentLiveSegments.map((s) => s.text).join(' ') ||
         savedSegments.map((s) => s.text).join(' ');
 
-      // Snapshot so we can restore if generate fails (don't lose previous good output). [W3]
-      const prevGenerated = generatedRef.current;
+      // Clear previous output and register streaming callbacks. [W3]
       generatedRef.current = '';
       setGeneratedNotes('');
+      setGenerateStatus('');
+      setNotesView('generated'); // switch tab only once we're committed to streaming
       window.api.onMergeChunk((chunk) => {
         generatedRef.current += chunk;
         setGeneratedNotes(generatedRef.current);
+        setGenerateStatus('');
       });
+      window.api.onMergeStatus((message) => setGenerateStatus(message));
 
       const res = await window.api.generateMerge({ humanNotesText: humanText, transcriptText, meetingId: activeMeetingId, templateType: meeting?.template_type });
       if (!res.ok) {
-        // Restore previous generated notes so user doesn't lose the last good output. [W3]
+        // Restore previous generated notes and view so user doesn't lose output. [W3]
         generatedRef.current = prevGenerated;
         setGeneratedNotes(prevGenerated);
+        setNotesView(prevNotesView);
         setStatusMessage(`Generate failed: ${res.error ?? 'Unknown error'}`);
         setRecordingStatus('paused');
       } else {
         if (!meeting?.title || meeting.title === 'New Meeting' || meeting.title === 'Untitled Meeting' || meeting.title === 'New Note') {
           const titleRes = await window.api.generateTitle({ transcriptText, notesText: humanText, meetingId: activeMeetingId });
           if (titleRes?.title) setMeeting((m) => m ? { ...m, title: titleRes.title } : m);
+        }
+
+        // Convert generated markdown to a TipTap doc and save as Final Notes.
+        // loadMeeting() will then seed FinalNotesEditor and switch to the 'final' tab.
+        try {
+          const { markdownToTiptapJSON } = await import('../lib/markdownToDoc.js');
+          const { json: finalDocJson, text: finalDocText } = markdownToTiptapJSON(generatedRef.current);
+          await window.api.db.saveFinalDoc(activeMeetingId, { finalDocJson, finalDocText });
+        } catch (convErr) {
+          console.warn('[Generate] markdownToTiptapJSON or saveFinalDoc failed:', convErr.message);
         }
 
         const wavBytes = recorder.getWavBytes();
@@ -476,11 +513,17 @@ export function Workspace() {
     } catch (err) {
       // Surface unexpected errors so the user knows generate failed. [W5]
       console.error('[Generate] unexpected error:', err);
+      // Restore previous good output and view so user doesn't lose anything. [W3]
+      generatedRef.current = prevGenerated;
+      setGeneratedNotes(prevGenerated);
+      setNotesView(prevNotesView);
       setStatusMessage(`Generate failed: ${err.message}`);
       setRecordingStatus('paused');
     } finally {
       window.api.offMergeChunk();
+      window.api.offMergeStatus();
       setIsGenerating(false);
+      setGenerateStatus('');
     }
   }, [activeMeetingId, meeting, loadMeeting]);
 
@@ -506,10 +549,25 @@ export function Workspace() {
     }
   }, [activeMeetingId]);
 
-  const handleExportMarkdown = () => {
-    const text = notesView === 'generated' ? generatedNotes : '';
-    if (!text) return;
-    const blob = new Blob([text], { type: 'text/markdown' });
+  const handleExportMarkdown = async () => {
+    const ed = finalEditorRef.current;
+    if (!ed || ed.isDestroyed) return;
+    const { default: TurndownService } = await import('turndown');
+    const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+    td.addRule('tableCell', {
+      filter: ['td', 'th'],
+      replacement: (content) => ` ${content} |`,
+    });
+    td.addRule('tableRow', {
+      filter: 'tr',
+      replacement: (content) => `|${content}\n`,
+    });
+    td.addRule('table', {
+      filter: 'table',
+      replacement: (content) => `\n\n${content}\n\n`,
+    });
+    const md = td.turndown(ed.getHTML());
+    const blob = new Blob([md], { type: 'text/markdown' });
     const url  = URL.createObjectURL(blob);
     const a    = Object.assign(document.createElement('a'), { href: url, download: `${(meeting?.title || 'meeting').replace(/[^a-z0-9]/gi, '-').toLowerCase()}.md` });
     a.click();
@@ -519,7 +577,9 @@ export function Workspace() {
 
   const isRecording = recorder.isRecording;
   // Allow Generate when: in-memory buffer/transcript is present OR we have saved segments (restored from DB)
-  const canGenerate = !isGenerating && (
+  // Exclude active recording — enhanceTranscript bails if isRecording is true, so generate
+  // would run on a partial in-progress transcript. [B6]
+  const canGenerate = !isGenerating && !isRecording && (
     recorder.mainRecBuffer?.length > 0 ||
     recorder.currentTranscript ||
     liveSegments.length > 0
@@ -590,6 +650,8 @@ export function Workspace() {
               !liveHumanDocTextRef.current?.trim() &&
               !meeting.notes?.human_doc_text?.trim() &&
               !meeting.notes?.enhanced_md &&
+              !meeting.notes?.summary_md?.trim() &&
+              !(meeting.notes?.final_doc_json && meeting.notes.final_doc_json !== '{}') &&
               !meeting.audio_path &&
               !meeting.folder_path &&
               liveSegments.length === 0 &&
@@ -692,6 +754,24 @@ export function Workspace() {
           <div className="flex items-center gap-2 px-4 pt-2.5 pb-2 border-b border-[#ede9df] dark:border-[#46412e] flex-shrink-0">
             <div style={{ display: 'flex', background: 'var(--bg-surface3)', borderRadius: 8, padding: 3, gap: 2 }}>
               <button
+                onClick={() => setNotesView('final')}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '5px 13px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                  fontSize: 13, fontWeight: notesView === 'final' ? 600 : 500,
+                  background: notesView === 'final' ? 'var(--bg-surface)' : 'transparent',
+                  color: notesView === 'final' ? 'var(--ink)' : 'var(--ink-faint)',
+                  boxShadow: notesView === 'final' ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
+                  transition: 'all 0.15s',
+                }}
+              >
+                <FileEdit size={12} style={{ opacity: notesView === 'final' ? 1 : 0.6 }} />
+                Final Notes
+                {finalInitialDoc && finalInitialDoc !== '{}' && (
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#5c6e00', flexShrink: 0 }} />
+                )}
+              </button>
+              <button
                 onClick={() => setNotesView('human')}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6,
@@ -740,7 +820,7 @@ export function Workspace() {
             />
 
             <div className="ml-auto flex items-center gap-1 flex-shrink-0">
-              {notesView === 'generated' && generatedNotes && (
+              {notesView === 'final' && finalInitialDoc && finalInitialDoc !== '{}' && (
                 <Button variant="ghost" size="xs" onClick={handleExportMarkdown}>
                   <Download size={12} />
                   {exportDone ? 'Saved!' : 'Export'}
@@ -751,7 +831,18 @@ export function Workspace() {
 
           {/* Notes content */}
           <div className="flex-1 overflow-y-auto min-h-0 flex flex-col bg-[#faf8f2] dark:bg-[#201d16] relative">
-            {/* NotesEditor is always mounted (hidden on Generated tab) so the TipTap
+            {/* FinalNotesEditor is always mounted (hidden when not on Final tab) so its
+                TipTap instance survives tab switches and flush-on-unmount saves work. [C3] */}
+            <div className={`flex-1 px-3 pt-3 pb-4 min-h-0 flex flex-col${notesView !== 'final' ? ' hidden' : ''}`}>
+              <Suspense fallback={null}>
+                <FinalNotesEditor
+                  meetingId={activeMeetingId}
+                  initialDoc={finalInitialDoc}
+                  editorRef={finalEditorRef}
+                />
+              </Suspense>
+            </div>
+            {/* NotesEditor is always mounted (hidden on Generated/Final tab) so the TipTap
                 instance is never destroyed on tab switch — prevents stale-doc remount
                 and preserves editorInstanceRef for isBlank/handleGenerate. [C3] */}
             <div className={`flex-1 px-3 pt-3 pb-16 min-h-0 flex flex-col${notesView !== 'human' ? ' hidden' : ''}`}>
@@ -764,7 +855,7 @@ export function Workspace() {
               />
             </div>
             <div className={`flex-1 flex flex-col min-h-0${notesView !== 'generated' ? ' hidden' : ''}`}>
-              <GeneratedNotesView md={generatedNotes} isStreaming={isGenerating} />
+              <GeneratedNotesView md={generatedNotes} isStreaming={isGenerating} generateStatus={generateStatus} />
             </div>
 
             {/* Floating dictation pill — inserts speech directly into the editor */}
@@ -849,15 +940,18 @@ export function Workspace() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function GeneratedNotesView({ md, isStreaming }) {
+function GeneratedNotesView({ md, isStreaming, generateStatus }) {
   const scrollRef = useRef(null);
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [md]);
 
   if (isStreaming && !md) return (
-    <div className="flex items-center justify-center h-full gap-2.5 text-[13px] text-[#7c5fc2]">
-      <Loader size={15} className="animate-spin" /> Generating notes…
+    <div className="flex flex-col items-center justify-center h-full gap-2 text-[13px] text-[#7c5fc2]">
+      <div className="flex items-center gap-2.5">
+        <Loader size={15} className="animate-spin" />
+        <span>{generateStatus || 'Generating notes…'}</span>
+      </div>
     </div>
   );
 

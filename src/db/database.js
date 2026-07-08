@@ -29,127 +29,152 @@ export function initDb() {
 }
 
 function runMigrations(db) {
+  // schema_version uses INTEGER PRIMARY KEY so INSERT OR REPLACE is truly a replace
+  // (single-row table). Older DBs may have the old no-PK version; that's fine —
+  // the PRIMARY KEY constraint is only enforced on new rows. [H5]
   db.exec(`
-    CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY NOT NULL);
   `);
 
   const row = db.prepare('SELECT MAX(version) AS version FROM schema_version').get();
   const currentVersion = row?.version ?? 0;
 
+  // Each version block is wrapped in a transaction so a crash mid-migration
+  // leaves the schema either fully applied or fully rolled back. [H4]
+
   if (currentVersion < 1) {
-    db.exec(`
-      -- ── Meetings ───────────────────────────────────────────────────────────
-      CREATE TABLE IF NOT EXISTS meetings (
-        id          TEXT PRIMARY KEY,
-        title       TEXT NOT NULL DEFAULT 'Untitled Meeting',
-        created_at  INTEGER NOT NULL,
-        updated_at  INTEGER NOT NULL,
-        started_at  INTEGER,
-        ended_at    INTEGER,
-        status      TEXT NOT NULL DEFAULT 'idle',
-        folder_path TEXT,
-        audio_path  TEXT,
-        duration_ms INTEGER,
-        tags        TEXT DEFAULT '[]'
-      );
+    db.transaction(() => {
+      db.exec(`
+        -- ── Meetings ───────────────────────────────────────────────────────────
+        CREATE TABLE IF NOT EXISTS meetings (
+          id          TEXT PRIMARY KEY,
+          title       TEXT NOT NULL DEFAULT 'Untitled Meeting',
+          created_at  INTEGER NOT NULL,
+          updated_at  INTEGER NOT NULL,
+          started_at  INTEGER,
+          ended_at    INTEGER,
+          status      TEXT NOT NULL DEFAULT 'idle',
+          folder_path TEXT,
+          audio_path  TEXT,
+          duration_ms INTEGER,
+          tags        TEXT DEFAULT '[]'
+        );
 
-      -- ── Notes ──────────────────────────────────────────────────────────────
-      -- human_doc_json: TipTap JSON document
-      -- human_doc_text: plain-text mirror for search/AI input
-      -- summary_md:     rolling live summary markdown
-      -- enhanced_md:    AI-merged final notes markdown
-      CREATE TABLE IF NOT EXISTS notes (
-        meeting_id       TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
-        human_doc_json   TEXT DEFAULT '{}',
-        human_doc_text   TEXT DEFAULT '',
-        summary_md       TEXT DEFAULT '',
-        enhanced_md      TEXT DEFAULT ''
-      );
+        -- ── Notes ──────────────────────────────────────────────────────────────
+        -- human_doc_json: TipTap JSON document
+        -- human_doc_text: plain-text mirror for search/AI input
+        -- summary_md:     rolling live summary markdown
+        -- enhanced_md:    AI-merged final notes markdown
+        CREATE TABLE IF NOT EXISTS notes (
+          meeting_id       TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+          human_doc_json   TEXT DEFAULT '{}',
+          human_doc_text   TEXT DEFAULT '',
+          summary_md       TEXT DEFAULT '',
+          enhanced_md      TEXT DEFAULT ''
+        );
 
-      -- ── Transcript segments ────────────────────────────────────────────────
-      CREATE TABLE IF NOT EXISTS transcript_segments (
-        id          TEXT PRIMARY KEY,
-        meeting_id  TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
-        start_ms    INTEGER,
-        end_ms      INTEGER,
-        speaker     TEXT,
-        text        TEXT NOT NULL,
-        created_at  INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_segments_meeting ON transcript_segments(meeting_id, start_ms);
+        -- ── Transcript segments ────────────────────────────────────────────────
+        CREATE TABLE IF NOT EXISTS transcript_segments (
+          id          TEXT PRIMARY KEY,
+          meeting_id  TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+          start_ms    INTEGER,
+          end_ms      INTEGER,
+          speaker     TEXT,
+          text        TEXT NOT NULL,
+          created_at  INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_segments_meeting ON transcript_segments(meeting_id, start_ms);
 
-      -- ── Todos ──────────────────────────────────────────────────────────────
-      -- meeting_id is nullable for global todos not attached to a meeting
-      -- source: 'human' = user created, 'ai' = extracted by AI
-      CREATE TABLE IF NOT EXISTS todos (
-        id           TEXT PRIMARY KEY,
-        meeting_id   TEXT REFERENCES meetings(id) ON DELETE CASCADE,
-        text         TEXT NOT NULL,
-        done         INTEGER NOT NULL DEFAULT 0,
-        owner        TEXT,
-        due          TEXT,
-        source       TEXT NOT NULL DEFAULT 'human',
-        position     REAL NOT NULL DEFAULT 0,
-        created_at   INTEGER NOT NULL,
-        completed_at INTEGER
-      );
-      CREATE INDEX IF NOT EXISTS idx_todos_meeting ON todos(meeting_id);
-      CREATE INDEX IF NOT EXISTS idx_todos_global  ON todos(done, created_at);
+        -- ── Todos ──────────────────────────────────────────────────────────────
+        -- meeting_id is nullable for global todos not attached to a meeting
+        -- source: 'human' = user created, 'ai' = extracted by AI
+        CREATE TABLE IF NOT EXISTS todos (
+          id           TEXT PRIMARY KEY,
+          meeting_id   TEXT REFERENCES meetings(id) ON DELETE CASCADE,
+          text         TEXT NOT NULL,
+          done         INTEGER NOT NULL DEFAULT 0,
+          owner        TEXT,
+          due          TEXT,
+          source       TEXT NOT NULL DEFAULT 'human',
+          position     REAL NOT NULL DEFAULT 0,
+          created_at   INTEGER NOT NULL,
+          completed_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_todos_meeting ON todos(meeting_id);
+        CREATE INDEX IF NOT EXISTS idx_todos_global  ON todos(done, created_at);
 
-      -- ── Full-text search ───────────────────────────────────────────────────
-      CREATE VIRTUAL TABLE IF NOT EXISTS meetings_fts USING fts5(
-        meeting_id UNINDEXED,
-        title,
-        notes_text,
-        transcript_text,
-        content='',
-        tokenize='unicode61'
-      );
-
-      INSERT OR REPLACE INTO schema_version(version) VALUES (1);
-    `);
+        -- ── Full-text search ───────────────────────────────────────────────────
+        CREATE VIRTUAL TABLE IF NOT EXISTS meetings_fts USING fts5(
+          meeting_id UNINDEXED,
+          title,
+          notes_text,
+          transcript_text,
+          content='',
+          tokenize='unicode61'
+        );
+      `);
+      db.prepare('INSERT OR REPLACE INTO schema_version(version) VALUES (?)').run(1);
+    })();
   }
 
   if (currentVersion < 2) {
-    db.exec(`
-      -- ── Custom Spaces ──────────────────────────────────────────────────────
-      CREATE TABLE IF NOT EXISTS spaces (
-        name       TEXT PRIMARY KEY,
-        icon       TEXT NOT NULL DEFAULT 'Star',
-        color      TEXT NOT NULL DEFAULT '#5c6e00',
-        bg         TEXT NOT NULL DEFAULT '#eef1d6',
-        sort_order INTEGER NOT NULL DEFAULT 0
-      );
-
-      INSERT OR REPLACE INTO schema_version(version) VALUES (2);
-    `);
+    db.transaction(() => {
+      db.exec(`
+        -- ── Custom Spaces ──────────────────────────────────────────────────────
+        CREATE TABLE IF NOT EXISTS spaces (
+          name       TEXT PRIMARY KEY,
+          icon       TEXT NOT NULL DEFAULT 'Star',
+          color      TEXT NOT NULL DEFAULT '#5c6e00',
+          bg         TEXT NOT NULL DEFAULT '#eef1d6',
+          sort_order INTEGER NOT NULL DEFAULT 0
+        );
+      `);
+      db.prepare('INSERT OR REPLACE INTO schema_version(version) VALUES (?)').run(2);
+    })();
   }
 
   if (currentVersion < 3) {
-    const cols = db.prepare("PRAGMA table_info(meetings)").all().map((c) => c.name);
-    if (!cols.includes('starred')) {
-      db.exec(`ALTER TABLE meetings ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;`);
-    }
-    db.exec(`INSERT OR REPLACE INTO schema_version(version) VALUES (3);`);
+    db.transaction(() => {
+      const cols = db.prepare("PRAGMA table_info(meetings)").all().map((c) => c.name);
+      if (!cols.includes('starred')) {
+        db.exec(`ALTER TABLE meetings ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;`);
+      }
+      db.prepare('INSERT OR REPLACE INTO schema_version(version) VALUES (?)').run(3);
+    })();
   }
 
   if (currentVersion < 4) {
-    db.exec(`
-      -- ── Custom Templates ───────────────────────────────────────────────────
-      CREATE TABLE IF NOT EXISTS templates (
-        id         TEXT PRIMARY KEY,
-        name       TEXT NOT NULL,
-        doc_json   TEXT NOT NULL DEFAULT '{}',
-        source     TEXT NOT NULL DEFAULT 'user',
-        sort_order INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL DEFAULT 0
-      );
-    `);
-    const meetingCols = db.prepare("PRAGMA table_info(meetings)").all().map((c) => c.name);
-    if (!meetingCols.includes('template_type')) {
-      db.exec(`ALTER TABLE meetings ADD COLUMN template_type TEXT;`);
-    }
-    db.exec(`INSERT OR REPLACE INTO schema_version(version) VALUES (4);`);
+    db.transaction(() => {
+      db.exec(`
+        -- ── Custom Templates ───────────────────────────────────────────────────
+        CREATE TABLE IF NOT EXISTS templates (
+          id         TEXT PRIMARY KEY,
+          name       TEXT NOT NULL,
+          doc_json   TEXT NOT NULL DEFAULT '{}',
+          source     TEXT NOT NULL DEFAULT 'user',
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT 0
+        );
+      `);
+      const meetingCols = db.prepare("PRAGMA table_info(meetings)").all().map((c) => c.name);
+      if (!meetingCols.includes('template_type')) {
+        db.exec(`ALTER TABLE meetings ADD COLUMN template_type TEXT;`);
+      }
+      db.prepare('INSERT OR REPLACE INTO schema_version(version) VALUES (?)').run(4);
+    })();
+  }
+
+  if (currentVersion < 5) {
+    db.transaction(() => {
+      const notesCols = db.prepare("PRAGMA table_info(notes)").all().map((c) => c.name);
+      if (!notesCols.includes('final_doc_json')) {
+        db.exec(`ALTER TABLE notes ADD COLUMN final_doc_json TEXT DEFAULT '{}';`);
+      }
+      if (!notesCols.includes('final_doc_text')) {
+        db.exec(`ALTER TABLE notes ADD COLUMN final_doc_text TEXT DEFAULT '';`);
+      }
+      db.prepare('INSERT OR REPLACE INTO schema_version(version) VALUES (?)').run(5);
+    })();
   }
 }
 

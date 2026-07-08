@@ -209,9 +209,14 @@ export function SettingsDrawer({ open, onClose }) {
     setDownloadingId(modelId);
     setDownloadPct(0);
     setDownloadError('');
-    const res = await window.api.downloadModel(modelId);
-    if (!res.ok && !res.canceled) {
-      setDownloadError(res.error || 'Download failed');
+    try {
+      const res = await window.api.downloadModel(modelId);
+      if (!res.ok && !res.canceled) {
+        setDownloadError(res.error || 'Download failed');
+        setDownloadingId(null);
+      }
+    } catch (err) {
+      setDownloadError(err.message || 'Download failed');
       setDownloadingId(null);
     }
   };
@@ -224,12 +229,17 @@ export function SettingsDrawer({ open, onClose }) {
     setDownloadingId(modelId);
     setDownloadPct(0);
     setDownloadError('');
-    const res = await window.api.downloadModelUrl(url, filename);
-    if (!res.ok && !res.canceled) {
-      setDownloadError(res.error || 'Download failed');
+    try {
+      const res = await window.api.downloadModelUrl(url, filename);
+      if (!res.ok && !res.canceled) {
+        setDownloadError(res.error || 'Download failed');
+        setDownloadingId(null);
+      } else if (res.ok) {
+        setCustomUrl('');
+      }
+    } catch (err) {
+      setDownloadError(err.message || 'Download failed');
       setDownloadingId(null);
-    } else if (res.ok) {
-      setCustomUrl('');
     }
   };
 

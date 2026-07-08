@@ -73,7 +73,7 @@ const Divider = () => (
   <span style={{ width: 1, height: 18, background: 'var(--border)', margin: '0 3px', flexShrink: 0 }} />
 );
 
-function FormatToolbar({ editor, onTemplate }) {
+export function FormatToolbar({ editor, onTemplate }) {
   const headingLevel = [1, 2, 3].find((l) => editor.isActive('heading', { level: l })) ?? 0;
 
   return (
@@ -153,6 +153,7 @@ function FormatToolbar({ editor, onTemplate }) {
 export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange, editorRef: externalEditorRef, onTemplate }) {
   const [slashMenu, setSlashMenu] = useState(null); // { query, items, pos, selectedIndex }
   const [isAiRunning, setIsAiRunning] = useState(false);
+  const isAiRunningRef = useRef(false); // ref mirror so callbacks read fresh value
   const debounceRef    = useRef(null);
   const editorRef      = useRef(null);
   // True once the user has actually typed something in the current meeting.
@@ -170,6 +171,11 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
   slashMenuRef.current = slashMenu;
 
   const handleAiCommand = useCallback(async (commandId, editor) => {
+    // Prevent concurrent AI commands — the single global chunk listener cannot handle
+    // overlapping invocations; use a ref so the stale-closure in useCallback sees
+    // the current value. [F2]
+    if (isAiRunningRef.current) return;
+    isAiRunningRef.current = true;
     setIsAiRunning(true);
     const selectedText = editor.state.selection.empty
       ? editor.getText().slice(0, 1000)
@@ -189,6 +195,7 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
       }
     } finally {
       window.api.offAiCommandChunk();
+      isAiRunningRef.current = false;
       setIsAiRunning(false);
     }
   }, []);
@@ -272,6 +279,9 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Track the last meeting we flushed so the two cleanup paths don't double-save. [F6]
+  const lastFlushedMidRef = useRef(null);
+
   // When meetingId changes, flush any pending save for the leaving meeting so the
   // last keystrokes are not lost. Capture meetingId in the effect body so the cleanup
   // still has access to the old id after meetingIdRef updates on the new render. [C2]
@@ -284,6 +294,7 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
       // opened but never edited must not overwrite saved notes. [C8]
       const ed = editorRef.current;
       if (ed && !ed.isDestroyed && capturedMid && hasEditedRef.current) {
+        lastFlushedMidRef.current = capturedMid;
         const json = ed.getJSON();
         const text = ed.getText();
         void window.api.db.saveNoteDoc(capturedMid, {
@@ -295,14 +306,15 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
     };
   }, [meetingId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Also flush on unmount (e.g. user navigates back to library) [C2]
+  // Also flush on unmount (e.g. user navigates back to library). Skip if the
+  // [meetingId] cleanup already flushed this meeting to avoid a duplicate write. [C2, F6]
   useEffect(() => {
     return () => {
       clearTimeout(debounceRef.current);
       const ed = editorRef.current;
       const mid = meetingIdRef.current;
       // Only flush when the user actually typed something. [C8]
-      if (ed && !ed.isDestroyed && mid && hasEditedRef.current) {
+      if (ed && !ed.isDestroyed && mid && hasEditedRef.current && lastFlushedMidRef.current !== mid) {
         const json = ed.getJSON();
         const text = ed.getText();
         void window.api.db.saveNoteDoc(mid, {
@@ -368,6 +380,9 @@ export function NotesEditor({ meetingId, initialDoc, onDocChange, onTodosChange,
   // Also depends on `editor` so it runs once the editor is ready.
   useEffect(() => {
     if (!editor) return;
+    // Skip hydration if the user has already typed — an async DB load arriving late
+    // must not clobber in-progress edits. [C1]
+    if (hasEditedRef.current) return;
     if (!initialDoc || initialDoc === '{}') {
       // On meeting switch with empty doc, explicitly clear the editor
       editor.commands.clearContent(false);

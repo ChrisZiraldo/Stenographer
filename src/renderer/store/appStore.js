@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { recorder } from '../engine/recorder.js';
 
 export const useAppStore = create((set, get) => ({
   // ── Navigation ─────────────────────────────────────────────────────────────
@@ -24,7 +25,7 @@ export const useAppStore = create((set, get) => ({
   rightPaneOpen: true,
   isGenerating: false,
   generatedNotes: '',
-  notesView: 'human',        // 'human' | 'generated'
+  notesView: 'human',        // 'human' | 'generated' | 'final'
   pendingImportFile: null,   // File object waiting to be transcribed in Workspace
 
   // ── Device settings ────────────────────────────────────────────────────────
@@ -79,6 +80,8 @@ export const useAppStore = create((set, get) => ({
     const rebuilt = remaining
       .map((seg) => (seg.speaker ? `[${seg.speaker}] ` : '') + seg.text)
       .join(' ');
+    // Keep recorder in sync so generate sees the updated transcript. [B1]
+    recorder.currentTranscript = rebuilt;
     return { liveSegments: remaining, liveTranscript: rebuilt };
   }),
   setLiveTranscript: (t) => set({ liveTranscript: t }),
