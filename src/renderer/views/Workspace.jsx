@@ -947,18 +947,22 @@ function GeneratedNotesView({ md, isStreaming, generateStatus }) {
   }, [md]);
 
   if (isStreaming && !md) return (
-    <div className="flex flex-col items-center justify-center h-full gap-2 text-[13px] text-[#7c5fc2]">
-      <div className="flex items-center gap-2.5">
-        <Loader size={15} className="animate-spin" />
-        <span>{generateStatus || 'Generating notes…'}</span>
+    <div className="flex flex-col items-center justify-center h-full gap-3 text-[13px] text-[#7c5fc2] dark:text-[#b39de8]">
+      <div className="relative w-9 h-9 flex items-center justify-center">
+        <div className="absolute inset-0 rounded-full bg-[#ede8f8] dark:bg-[#2a2040] animate-pulse" />
+        <Sparkles size={17} className="relative z-10" />
+      </div>
+      <div className="flex items-center gap-2">
+        <Loader size={12} className="animate-spin opacity-70" />
+        <span className="font-medium">{generateStatus || 'Generating notes…'}</span>
       </div>
     </div>
   );
 
   if (!md) return (
     <div className="flex flex-col items-center justify-center h-full text-center p-7">
-      <div className="w-10 h-10 rounded-2xl bg-[#ede8f8] flex items-center justify-center mb-3">
-        <Sparkles size={18} className="text-[#7c5fc2]" />
+      <div className="w-10 h-10 rounded-2xl bg-[#ede8f8] dark:bg-[#2a2040] flex items-center justify-center mb-3">
+        <Sparkles size={18} className="text-[#7c5fc2] dark:text-[#b39de8]" />
       </div>
       <p className="text-[13px] font-medium text-[#5c5448] dark:text-[#a09890] mb-1">Generated Notes</p>
       <p className="text-[12px] text-[#9c9285] dark:text-[#6b6358] leading-relaxed max-w-[200px]">
@@ -968,8 +972,19 @@ function GeneratedNotesView({ md, isStreaming, generateStatus }) {
   );
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
-      <div className="prose text-sm leading-relaxed" dangerouslySetInnerHTML={{ __html: markdownToHtml(md) }} />
+    <div className="flex-1 flex flex-col min-h-0 relative">
+      {/* Slim animated strip while streaming */}
+      {isStreaming && (
+        <div className="flex-shrink-0 flex items-center gap-2 px-4 py-1.5 bg-[#f3f0fc] dark:bg-[#1e1a30] border-b border-[#ddd8f5] dark:border-[#302860]">
+          <Loader size={11} className="animate-spin text-[#7c5fc2] dark:text-[#b39de8] flex-shrink-0" />
+          <span className="text-[11px] font-medium text-[#7c5fc2] dark:text-[#b39de8] truncate">
+            {generateStatus || 'Writing…'}
+          </span>
+        </div>
+      )}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
+        <div className="prose text-sm leading-relaxed" dangerouslySetInnerHTML={{ __html: markdownToHtml(md) + (isStreaming ? '<span class="inline-block w-[2px] h-[1em] bg-[#7c5fc2] dark:bg-[#b39de8] ml-0.5 align-middle animate-pulse" />' : '') }} />
+      </div>
     </div>
   );
 }

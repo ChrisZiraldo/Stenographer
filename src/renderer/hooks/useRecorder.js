@@ -40,7 +40,9 @@ export function useRecorder() {
     const onError = (msg) => {
       setStatusMessage(msg);
       const cur = useAppStore.getState().recordingStatus;
-      if (cur !== 'paused') setRecordingStatus('idle');
+      // An active capture must not be demoted: a failed transcription still emits
+      // 'error' while the audio graph keeps running, and only pause() ends it. [R19]
+      if (cur !== 'paused' && !recorder.isRecording) setRecordingStatus('idle');
     };
     const onLevel        = (l)        => setAudioLevel(l);
     const onProgress     = (msg, pct) => setLoadingProgress(pct != null ? { message: msg, pct } : null);

@@ -43,6 +43,7 @@ export class Recorder {
     this._micStream    = null;
     this._micWorklet   = null;
     this._starting     = false; // [R15] true while start() is setting up audio graph
+    this._pausing      = false; // [R20] true while pause() drains the typing chain
 
     // Session state
     this.isRecording      = false;
@@ -291,7 +292,12 @@ export class Recorder {
     this._starting = false; // [R15] clear setup flag before marking live
     this.isRecording = true;
     this._startLevelMeter();
-    this._emit('status', 'Listening…', 'recording');
+    // Audio is still worth capturing without the model, but say so — otherwise a
+    // failed model load looks like a recording that silently produces nothing.
+    this._emit('status',
+      this.engine.isLoaded ? 'Listening…' : 'Recording audio — transcription model unavailable',
+      'recording'
+    );
     return true;
   }
 
@@ -302,6 +308,7 @@ export class Recorder {
       return;
     }
     if (!this.isRecording) return;
+    this._pausing = true; // [R20] collapse the cosmetic typing delay while stopping
     this._stopLevelMeter();
     clearTimeout(this._summaryTimer); // [R14] stop rolling summary timer on pause
     this._emit('status', 'Pausing…', 'loading');
@@ -350,6 +357,8 @@ export class Recorder {
         filePath: `recordings/${this.sessionTimestamp}/recording.wav`,
       }).catch((e) => console.warn('[Recorder] WAV save failed:', e));
     }
+
+    this._pausing = false;
 
     const hasContent = this.currentTranscript.trim() || this.mainRecBuffer.length >= 1000;
     this._emit('status',
@@ -701,7 +710,12 @@ export class Recorder {
     for (let i = 0; i < words.length; i++) {
       const partial = words.slice(0, i + 1).join(' ');
       this._emit('typing', { partial, speakerLabel, base });
-      await new Promise((r) => setTimeout(r, 38));
+      // The per-word delay is cosmetic, so never let it gate pause(): Chromium
+      // throttles timers to ~1/s in a hidden window (and ~1/min after a few
+      // minutes), which would stall the WAV save this chain blocks on. [R20]
+      if (!this._pausing && !document.hidden) {
+        await new Promise((r) => setTimeout(r, 38));
+      }
     }
 
     const labelPlain = speakerLabel ? `[${speakerLabel}] ` : '';

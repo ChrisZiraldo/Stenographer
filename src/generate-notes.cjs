@@ -211,7 +211,29 @@ async function runLocal({ modelPath, prompt }) {
     llama = await getLlama({ gpu: gpuBackend });
     llamaModel = await llama.loadModel({ modelPath });
     emit({ type: 'status', message: 'Initialising context…' });
-    context = await llamaModel.createContext();
+    // Request a generous context floor — node-llama-cpp's "auto" sizing can otherwise
+    // shrink well below the model's trained context on memory-constrained machines,
+    // causing long transcripts to be silently context-shifted (older tokens dropped)
+    // instead of fully considered. Cap at 32768, Qwen2.5's trained context length.
+    // Fall back to plain "auto" if 4096 doesn't fit in available memory. [L1]
+    try {
+      context = await llamaModel.createContext({ contextSize: { min: 4096, max: 32768 } });
+    } catch {
+      context = await llamaModel.createContext();
+    }
+    const ctxSize = context.contextSize;
+    emit({ type: 'status', message: `Context ready (${ctxSize.toLocaleString()} tokens).` });
+
+    // Rough estimate (~4 chars/token) so users understand why a long transcript may
+    // come out thin: node-llama-cpp shifts older tokens out rather than erroring. [L1]
+    const estimatedPromptTokens = Math.ceil(prompt.length / 4);
+    if (estimatedPromptTokens > ctxSize * 0.8) {
+      emit({
+        type: 'status',
+        message: `Warning: transcript is long (~${estimatedPromptTokens.toLocaleString()} tokens) relative to this model's context (${ctxSize.toLocaleString()} tokens). Output may be thinner than expected — try a model with a larger context, or a smaller transcript.`,
+      });
+    }
+
     session = new LlamaChatSession({ contextSequence: context.getSequence() });
     emit({ type: 'status', message: 'Generating…' });
 

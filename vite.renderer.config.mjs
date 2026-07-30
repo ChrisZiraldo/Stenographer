@@ -16,6 +16,11 @@ export default defineConfig({
     exclude: ['onnxruntime-web'],
   },
   server: {
+    // The Parakeet model cache lives in IndexedDB, which is scoped to the origin.
+    // A drifting dev-server port silently orphans the cache and forces a full
+    // re-download from Hugging Face, so the port must be stable.
+    port: 5176,
+    strictPort: true,
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
