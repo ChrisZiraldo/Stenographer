@@ -103,6 +103,7 @@ func modeLabel(_ mode: CaptureMode) -> String {
 
 struct PlaybackBar: View {
     @Bindable var playback: PlaybackController
+    @State private var scrub: Double?
 
     var body: some View {
         HStack {
@@ -112,7 +113,13 @@ struct PlaybackBar: View {
             .buttonStyle(.borderless)
             .keyboardShortcut(.space, modifiers: [])
             Text(Format.timestamp(playback.currentTime)).monospacedDigit()
-            Slider(value: Binding(get: { playback.currentTime }, set: { playback.seek(to: $0) }), in: 0...max(playback.duration, 0.1))
+            // Seeks only when the user releases the thumb; per-tick binding writes would keep rewinding playback.
+            Slider(value: Binding(get: { scrub ?? playback.currentTime }, set: { scrub = $0 }), in: 0...max(playback.duration, 0.1)) { editing in
+                if !editing, let time = scrub {
+                    playback.seek(to: time)
+                    scrub = nil
+                }
+            }
             Text(Format.timestamp(playback.duration)).monospacedDigit()
         }
         .font(.callout)
