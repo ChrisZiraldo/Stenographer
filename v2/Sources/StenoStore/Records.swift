@@ -87,14 +87,23 @@ public struct SpeakerRecord: StenoRecord, Identifiable, Equatable, Hashable {
     public var displayName: String?
     public var isMe: Bool
     public var colorIndex: Int
+    /// The library voice this speaker was linked to (by recognition or by "remember this voice").
+    public var knownSpeakerId: String?
+    /// True when `displayName` was assigned by voice recognition rather than typed by the user.
+    public var autoMatched: Bool
 
-    public init(id: String, runId: String, label: String, displayName: String?, isMe: Bool, colorIndex: Int) {
+    public init(
+        id: String, runId: String, label: String, displayName: String?, isMe: Bool, colorIndex: Int,
+        knownSpeakerId: String? = nil, autoMatched: Bool = false
+    ) {
         self.id = id
         self.runId = runId
         self.label = label
         self.displayName = displayName
         self.isMe = isMe
         self.colorIndex = colorIndex
+        self.knownSpeakerId = knownSpeakerId
+        self.autoMatched = autoMatched
     }
 
     public var name: String { displayName ?? label }

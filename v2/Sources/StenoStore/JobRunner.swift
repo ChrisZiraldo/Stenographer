@@ -120,8 +120,19 @@ public actor JobRunner {
         defer { runningSessionID = nil }
         do {
             let document = try await processor(sessionDir, UUID())
+            let voices = SpeakerLibrary.embeddings(sessionDir: sessionDir, runID: document.runId.uuidString)
             try await db.writer.write { db in
                 try RunRepository.save(db, document: document, sessionID: job.sessionId)
+                // Recognition is best-effort: a failure rolls back only its savepoint, never the transcript.
+                do {
+                    try db.inSavepoint {
+                        let named = try SpeakerLibrary.label(db, runID: document.runId.uuidString, embeddings: voices)
+                        if named > 0 { StenoLog.store.info("Recognized \(named) known speaker(s)") }
+                        return .commit
+                    }
+                } catch {
+                    StenoLog.store.error("Speaker recognition failed: \(error.localizedDescription, privacy: .public)")
+                }
                 try SessionRepository.transition(db, id: job.sessionId, to: .ready, error: document.diarizationError)
                 try db.execute(
                     sql: "UPDATE job SET state = 'done', updated_at = ? WHERE id = ?",

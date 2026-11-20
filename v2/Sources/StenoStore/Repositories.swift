@@ -118,7 +118,7 @@ public struct RunRepository: Sendable {
             ).insert(db)
         }
         for u in document.utterances {
-            var record = UtteranceRecord(
+            let record = UtteranceRecord(
                 id: nil, runId: runID, speakerId: "\(runID):\(u.speaker)", track: u.track, startSec: u.start,
                 endSec: u.end, text: u.text)
             try record.insert(db)
@@ -136,11 +136,13 @@ public struct RunRepository: Sendable {
         }
     }
 
+    /// A manual rename (or clear) overrides any recognized name and unlinks the speaker from the voice library.
     public func renameSpeaker(id: String, displayName: String) throws {
         let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         try db.writer.write { db in
             try db.execute(
-                sql: "UPDATE speaker SET display_name = ? WHERE id = ?", arguments: [trimmed.isEmpty ? nil : trimmed, id])
+                sql: "UPDATE speaker SET display_name = ?, known_speaker_id = NULL, auto_matched = 0 WHERE id = ?",
+                arguments: [trimmed.isEmpty ? nil : trimmed, id])
         }
     }
 

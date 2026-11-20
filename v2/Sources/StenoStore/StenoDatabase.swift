@@ -29,9 +29,11 @@ public enum StoreError: Error, LocalizedError, Equatable {
     case invalidTransition(from: SessionStatus, to: SessionStatus)
     case notFound(String)
     case speakersInDifferentRuns
+    case noVoiceEmbedding
 
     public var errorDescription: String? {
         switch self {
+        case .noVoiceEmbedding: "No voice sample is available for this speaker"
         case .invalidTransition(let from, let to): "Invalid session transition \(from.rawValue) → \(to.rawValue)"
         case .notFound(let what): "\(what) not found"
         case .speakersInDifferentRuns: "Speakers belong to different transcripts"
@@ -81,6 +83,16 @@ public final class StenoDatabase: Sendable {
                     CREATE TABLE note (session_id TEXT PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE, body_md TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL);
                     CREATE TABLE generated_note (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
                       template_id TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, body_md TEXT NOT NULL, created_at REAL NOT NULL);
+                    """)
+        }
+        migrator.registerMigration("v3") { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE known_speaker (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, centroid BLOB NOT NULL,
+                      sample_count INTEGER NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+                    CREATE UNIQUE INDEX known_speaker_name ON known_speaker(name COLLATE NOCASE);
+                    ALTER TABLE speaker ADD COLUMN known_speaker_id TEXT REFERENCES known_speaker(id) ON DELETE SET NULL;
+                    ALTER TABLE speaker ADD COLUMN auto_matched INTEGER NOT NULL DEFAULT 0;
                     """)
         }
         return migrator

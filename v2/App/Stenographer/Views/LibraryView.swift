@@ -7,22 +7,70 @@ struct LibraryView: View {
     @State private var search = ""
     @State private var pendingDelete: SessionRecord?
     @State private var pendingReprocess: SessionRecord?
+    @State private var mode = SidebarMode.meetings
+    @State private var people: [SpeakerSummary] = []
+    @State private var personID: String?
+
+    enum SidebarMode: String, CaseIterable { case meetings = "Meetings", people = "People" }
+
+    private func reloadPeople() {
+        people = (try? SpeakerLibrary(model.database).summaries()) ?? []
+    }
 
     var body: some View {
         NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280)
+            VStack(spacing: 0) {
+                Picker("", selection: $mode) {
+                    ForEach(SidebarMode.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding([.horizontal, .top], 8)
+                switch mode {
+                case .meetings: sidebar
+                case .people:
+                    PeopleList(
+                        people: people.filter { search.isEmpty || $0.known.name.localizedCaseInsensitiveContains(search) },
+                        selection: $personID)
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 240, ideal: 280)
         } detail: {
-            if let session = model.session(id: model.selection) {
-                SessionDetailView(model: model, session: session)
-                    .id(session.id)
-            } else {
-                ContentUnavailableView("No Session Selected", systemImage: "waveform", description: Text("Record or import audio to begin."))
+            switch mode {
+            case .meetings:
+                if let session = model.session(id: model.selection) {
+                    SessionDetailView(model: model, session: session)
+                        .id(session.id)
+                } else {
+                    ContentUnavailableView("No Session Selected", systemImage: "waveform", description: Text("Record or import audio to begin."))
+                }
+            case .people:
+                if let person = people.first(where: { $0.id == personID }) {
+                    PersonDetailView(
+                        model: model, person: person, onChange: reloadPeople,
+                        onOpen: { id in
+                            model.selection = id
+                            mode = .meetings
+                        }
+                    )
+                    .id(person.id)
+                } else {
+                    ContentUnavailableView("No Person Selected", systemImage: "person.crop.rectangle.stack", description: Text("Choose someone to see every meeting you've had with them."))
+                }
             }
         }
-        .searchable(text: $search, placement: .sidebar, prompt: "Search titles, notes, transcripts")
+        .task { reloadPeople() }
+        .onChange(of: mode) { reloadPeople() }
+        .onChange(of: model.sessions) { reloadPeople() }
+        .searchable(
+            text: $search, placement: .sidebar,
+            prompt: mode == .meetings ? "Search titles, notes, transcripts" : "Search people")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) { RecordButton(model: model) }
+            ToolbarItemGroup(placement: .primaryAction) {
+                RecordButton(model: model)
+                SettingsLink { Label("Settings", systemImage: "gearshape") }
+                    .help("Settings")
+            }
         }
         .safeAreaInset(edge: .top) { StatusBanners(model: model) }
         .sheet(isPresented: $model.showOnboarding) { OnboardingView(model: model) }

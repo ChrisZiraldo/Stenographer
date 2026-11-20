@@ -12,6 +12,8 @@ struct TranscriptView: View {
     @State private var follow = true
     @State private var renaming: SpeakerRecord?
     @State private var newName = ""
+    @State private var canRemember = false
+    @State private var remember = true
 
     static let palette: [Color] = [.blue, .green, .orange, .purple, .pink, .teal, .brown, .indigo]
 
@@ -34,6 +36,9 @@ struct TranscriptView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Rename \(speaker.name)").font(.headline)
                 TextField("Name", text: $newName).onSubmit { commitRename(speaker) }
+                if canRemember {
+                    Toggle("Remember this voice for future meetings", isOn: $remember)
+                }
                 HStack {
                     Spacer()
                     Button("Cancel") { renaming = nil }.keyboardShortcut(.cancelAction)
@@ -88,7 +93,12 @@ struct TranscriptView: View {
         Menu {
             Button("Rename…") {
                 newName = speaker.displayName ?? ""
+                canRemember = SpeakerLibrary(model.database).canRemember(speakerID: speaker.id)
+                remember = true
                 renaming = speaker
+            }
+            if speaker.autoMatched {
+                Button("Not \(speaker.name)") { clearName(speaker) }
             }
             Menu("Merge into") {
                 ForEach(speakers.filter { $0.id != speaker.id }) { other in
@@ -97,12 +107,16 @@ struct TranscriptView: View {
             }
             .disabled(speakers.count < 2)
         } label: {
-            Text(speaker.name)
-                .font(.callout.weight(.semibold))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 1)
-                .background(color(speaker).opacity(0.2), in: Capsule())
-                .foregroundStyle(color(speaker))
+            HStack(spacing: 3) {
+                Text(speaker.name)
+                if speaker.autoMatched { Image(systemName: "checkmark.seal.fill").imageScale(.small) }
+            }
+            .font(.callout.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(color(speaker).opacity(0.2), in: Capsule())
+            .foregroundStyle(color(speaker))
+            .help(speaker.autoMatched ? "Recognized from your speaker library" : "")
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -133,10 +147,22 @@ struct TranscriptView: View {
     private func commitRename(_ speaker: SpeakerRecord) {
         do {
             try RunRepository(model.database).renameSpeaker(id: speaker.id, displayName: newName)
+            if canRemember, remember, !newName.trimmingCharacters(in: .whitespaces).isEmpty {
+                try SpeakerLibrary(model.database).rememberVoice(ofSpeaker: speaker.id, as: newName)
+            }
         } catch {
             model.alert = error.localizedDescription
         }
         renaming = nil
+        reload()
+    }
+
+    private func clearName(_ speaker: SpeakerRecord) {
+        do {
+            try RunRepository(model.database).renameSpeaker(id: speaker.id, displayName: "")
+        } catch {
+            model.alert = error.localizedDescription
+        }
         reload()
     }
 
