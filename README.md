@@ -33,11 +33,11 @@ Microphone, and System Audio Recording under System Settings → Privacy & Secur
 
 ## CLI
 
-`steno` exposes every stage: `devices`, `record`, `recover`, `finalize`, `import`, `transcribe`, `diarize`, `process`, `notes` and `import-v1`. Run `steno --help`. Build it signed with `Scripts/sign-cli.sh`, and use `Scripts/capture-check.sh` for a timed system-audio capture check.
+`steno` exposes every stage: `devices`, `record`, `recover`, `finalize`, `import`, `transcribe`, `diarize`, `process` and `notes`. Run `steno --help`. Build it signed with `Scripts/sign-cli.sh`, and use `Scripts/capture-check.sh` for a timed system-audio capture check.
 
 ## Data
 
-Everything lives in `~/Library/Application Support/Stenographer2/`: a SQLite index plus one folder per session (manifest, audio, transcripts). The manifest is the source of truth for capture; the database is an index that startup recovery rebuilds.
+Everything lives in `~/Library/Application Support/Stenographer/`: a SQLite index plus one folder per session (manifest, audio, transcripts). The manifest is the source of truth for capture; the database is an index that startup recovery rebuilds.
 
 ## Layout
 
@@ -46,7 +46,7 @@ Everything lives in `~/Library/Application Support/Stenographer2/`: a SQLite ind
 | `Sources/StenoModel` | Shared types, manifest IO |
 | `Sources/StenoAudio` | Capture engine, WAV storage, finalize, import |
 | `Sources/StenoPipeline` | ASR, diarization, transcript merge, live captions |
-| `Sources/StenoStore` | SQLite store, job queue, recovery, speaker library, v1 importer |
+| `Sources/StenoStore` | SQLite store, job queue, recovery, speaker library |
 | `Sources/StenoLlama` | Built-in llama.cpp engine (runs in the XPC worker) |
 | `Sources/StenoNotes` | LLM providers, templates, note generation |
 | `Sources/StenoXPC` | App/worker XPC protocols |
@@ -56,7 +56,7 @@ Everything lives in `~/Library/Application Support/Stenographer2/`: a SQLite ind
 
 ## Coming from v1
 
-The original Electron app is tagged `v1-final`. **File → Import from Stenographer v1…** (or `steno import-v1`) brings its meetings, notes and recordings over; it reads a copy of the v1 database and is safe to repeat. Not carried over: spaces, todos, custom templates, dictation, rich-text notes.
+The original Electron app is tagged `v1-final`. There is no importer.
 
 ## License
 

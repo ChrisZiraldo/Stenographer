@@ -7,7 +7,7 @@ public struct AppPaths: Sendable {
 
     public static var defaultRoot: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Stenographer2", isDirectory: true)
+            .appendingPathComponent("Stenographer", isDirectory: true)
     }
 
     public init(root: URL = AppPaths.defaultRoot) throws {

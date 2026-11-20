@@ -1,3 +1,4 @@
+import StenoAudio
 import StenoModel
 import StenoStore
 import SwiftUI
@@ -67,6 +68,7 @@ struct LibraryView: View {
             prompt: mode == .meetings ? "Search titles, notes, transcripts" : "Search people")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                CaptureControls(disabled: model.recorder.isRecording)
                 RecordButton(model: model)
                 SettingsLink { Label("Settings", systemImage: "gearshape") }
                     .help("Settings")
@@ -236,5 +238,31 @@ struct StatusBanners: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(.bar)
+    }
+}
+
+/// Recording mode and microphone pickers for the toolbar. Same settings as Settings -> General.
+struct CaptureControls: View {
+    let disabled: Bool
+    @AppStorage(SettingsKey.captureMode) private var mode = CaptureMode.call.rawValue
+    @AppStorage(SettingsKey.micDeviceUID) private var micUID = ""
+    @State private var devices = DeviceCatalog.inputDevices()
+
+    var body: some View {
+        Picker("Recording mode", selection: $mode) {
+            ForEach([CaptureMode.call, .inPerson, .systemOnly], id: \.self) { Text(modeLabel($0)).tag($0.rawValue) }
+        }
+        .help("Recording mode")
+        .disabled(disabled)
+        Picker("Microphone", selection: $micUID) {
+            Text("System default").tag("")
+            ForEach(devices) { Text($0.name).tag($0.uid) }
+            if !micUID.isEmpty, !devices.contains(where: { $0.uid == micUID }) {
+                Text("Unavailable microphone").tag(micUID)
+            }
+        }
+        .help("Microphone")
+        .disabled(disabled || mode == CaptureMode.systemOnly.rawValue)
+        .onAppear { devices = DeviceCatalog.inputDevices() }
     }
 }
