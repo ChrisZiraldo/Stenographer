@@ -97,6 +97,10 @@ public final class StenoDatabase: Sendable {
                     ALTER TABLE speaker ADD COLUMN auto_matched INTEGER NOT NULL DEFAULT 0;
                     """)
         }
+        migrator.registerMigration("v4") { db in
+            // Formatted (RTF) human notes. `body_md` stays the plain text used by search, export and prompts.
+            try db.execute(sql: "ALTER TABLE note ADD COLUMN body_rtf BLOB")
+        }
         return migrator
     }
 }

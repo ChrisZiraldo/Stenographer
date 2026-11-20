@@ -5,7 +5,7 @@ A native macOS app that records meetings, transcribes them locally, labels who s
 - **Capture:** system audio through Core Audio process taps plus your microphone, written continuously to crash-safe 16 kHz WAV parts with sample-aligned timing. Device changes and sleep start a new part; a crash is repaired on next launch.
 - **Transcription:** Parakeet TDT 0.6B v3 via [FluidAudio](https://github.com/FluidInference/FluidAudio) (Core ML / Neural Engine). Live captions while recording.
 - **Speakers:** pyannote community-1 diarization. Name a speaker once and choose "Remember this voice"; later meetings are labelled automatically. A People panel lists everyone with their meeting history.
-- **Notes:** your own notes plus AI-generated notes from templates, using a built-in llama.cpp model (downloaded once from Settings → AI, then fully offline; no Ollama needed), Apple's on-device model, or any OpenAI-compatible endpoint (Ollama, LM Studio, cloud). Markdown export.
+- **Notes:** your own formatted notes (bold, italic, underline, font, size, color, alignment) plus AI-generated notes from templates, using a built-in llama.cpp model (downloaded once from Settings → AI, then fully offline; no Ollama needed), Apple's on-device model, or any OpenAI-compatible endpoint (Ollama, LM Studio, cloud). Markdown export.
 - **Isolation:** speech models run in an XPC worker, so a model crash never takes down a recording.
 
 ## Requirements

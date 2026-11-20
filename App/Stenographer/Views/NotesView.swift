@@ -2,12 +2,13 @@ import AppKit
 import StenoStore
 import SwiftUI
 
-/// Plain-text Markdown notes with debounced autosave; also saves on disappear and app termination.
+/// Formatted notes (bold, italic, underline, font, size, color, alignment) with debounced autosave;
+/// also saves on disappear and app termination. Stored as RTF, with the plain text kept for search and AI notes.
 struct NotesView: View {
     let model: AppModel
     let session: SessionRecord
-    @State private var text = ""
-    @State private var savedText = ""
+    @State private var controller = RichTextController()
+    @State private var dirty = false
     @State private var loaded = false
     @State private var saveTask: Task<Void, Never>?
     @State private var saveError: String?
@@ -21,31 +22,32 @@ struct NotesView: View {
                     .padding(6)
                     .background(.red)
             }
-            TextEditor(text: $text)
-                .font(.body)
-                .scrollContentBackground(.hidden)
+            RichTextToolbar(controller: controller)
+            Divider()
+            RichTextEditor(controller: controller)
                 .padding(8)
                 .overlay(alignment: .topLeading) {
-                    if text.isEmpty {
-                        Text("Type notes in Markdown…").foregroundStyle(.tertiary).padding(14).allowsHitTesting(false)
+                    if controller.isEmpty {
+                        Text("Type notes…").foregroundStyle(.tertiary).padding(.horizontal, 15).padding(.vertical, 16).allowsHitTesting(false)
                     }
                 }
         }
         .onAppear(perform: load)
-        .onChange(of: text) {
-            guard loaded else { return }
-            scheduleSave()
-        }
         .onDisappear(perform: saveNow)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in saveNow() }
     }
 
     private func load() {
+        let notes = NoteRepository(model.database)
         do {
-            text = try NoteRepository(model.database).body(sessionID: session.id)
-            savedText = text
+            controller.setContent(plain: try notes.body(sessionID: session.id), rtf: try notes.richText(sessionID: session.id))
         } catch {
             saveError = error.localizedDescription
+        }
+        controller.onChange = {
+            guard loaded else { return }
+            dirty = true
+            scheduleSave()
         }
         loaded = true
     }
@@ -60,10 +62,11 @@ struct NotesView: View {
     }
 
     private func saveNow() {
-        guard loaded, text != savedText else { return }
+        guard loaded, dirty else { return }
+        let (plain, rtf) = controller.snapshot()
         do {
-            try NoteRepository(model.database).save(sessionID: session.id, body: text)
-            savedText = text
+            try NoteRepository(model.database).save(sessionID: session.id, body: plain, richText: rtf)
+            dirty = false
             saveError = nil
         } catch {
             saveError = error.localizedDescription

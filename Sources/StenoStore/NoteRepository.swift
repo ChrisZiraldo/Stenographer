@@ -36,15 +36,23 @@ public struct NoteRepository: Sendable {
         }
     }
 
-    /// Upserts the human notes and reindexes the session.
-    public func save(sessionID: String, body: String) throws {
+    /// The formatted notes (RTF), or nil when the notes were only ever saved as plain text.
+    public func richText(sessionID: String) throws -> Data? {
+        try db.writer.read {
+            try Data.fetchOne($0, sql: "SELECT body_rtf FROM note WHERE session_id = ?", arguments: [sessionID])
+        }
+    }
+
+    /// Upserts the human notes and reindexes the session. `body` is the plain text; `richText` the RTF with formatting.
+    public func save(sessionID: String, body: String, richText: Data?) throws {
         try db.writer.write { db in
             try db.execute(
                 sql: """
-                    INSERT INTO note (session_id, body_md, updated_at) VALUES (?, ?, ?)
-                    ON CONFLICT(session_id) DO UPDATE SET body_md = excluded.body_md, updated_at = excluded.updated_at
+                    INSERT INTO note (session_id, body_md, body_rtf, updated_at) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET body_md = excluded.body_md, body_rtf = excluded.body_rtf,
+                      updated_at = excluded.updated_at
                     """,
-                arguments: [sessionID, body, Date().timeIntervalSince1970])
+                arguments: [sessionID, body, richText, Date().timeIntervalSince1970])
             try SearchIndex.reindex(db, sessionID: sessionID)
         }
     }

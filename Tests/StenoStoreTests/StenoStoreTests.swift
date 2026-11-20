@@ -251,6 +251,24 @@ func eventually(_ condition: () throws -> Bool) async throws {
         #expect(try f.runs.speakers(runID: run).first?.displayName == nil)
     }
 
+    @Test func formattedNotesKeepRichTextAndSearchThePlainText() throws {
+        let f = try Fixture()
+        let m = try f.makeSessionFolder(state: .captured)
+        try f.sessions.create(manifest: m)
+        let id = m.id.uuidString
+        let notes = NoteRepository(f.db)
+        #expect(try notes.richText(sessionID: id) == nil)
+
+        let rtf = Data("{\\rtf1 bold}".utf8)
+        try notes.save(sessionID: id, body: "launch checklist", richText: rtf)
+        #expect(try notes.richText(sessionID: id) == rtf)
+        #expect(try notes.body(sessionID: id) == "launch checklist")
+        #expect(try SearchIndex.search(f.db, "checklist") == [id])
+
+        try notes.save(sessionID: id, body: "plain only", richText: nil)
+        #expect(try notes.richText(sessionID: id) == nil)
+    }
+
     @Test func searchFindsTranscriptPrefix() throws {
         let f = try Fixture()
         let a = try f.makeSessionFolder(state: .captured)
