@@ -16,3 +16,11 @@ recordings/
 
 # Logs
 npm-debug.log*
+
+# Stenographer v2 (Swift)
+v2/.build/
+v2/.swiftpm/
+v2/App/*.xcodeproj/
+v2/App/*/Info.plist
+v2/App/*/*.entitlements
+v2/Fixtures/generated/

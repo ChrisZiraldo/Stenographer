@@ -1,0 +1,77 @@
+name: Stenographer
+options:
+  bundleIdPrefix: com.ziraldo
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+packages:
+  Steno:
+    path: ..
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    from: 2.4.1
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    DEVELOPMENT_TEAM: KASUQVRJ2V
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Apple Development: chris.ziraldo@wbd.com (WZ8DCXAW58)"
+    ENABLE_HARDENED_RUNTIME: YES
+    ARCHS: arm64
+targets:
+  Stenographer:
+    type: application
+    platform: macOS
+    sources: [Stenographer]
+    info:
+      path: Stenographer/Info.plist
+      properties:
+        CFBundleDisplayName: Stenographer
+        CFBundleShortVersionString: "2.0"
+        LSApplicationCategoryType: public.app-category.productivity
+        NSMicrophoneUsageDescription: Stenographer records meeting audio to transcribe it locally on your Mac.
+        NSAudioCaptureUsageDescription: Stenographer records meeting audio to transcribe it locally on your Mac.
+    entitlements:
+      path: Stenographer/Stenographer.entitlements
+      properties:
+        com.apple.security.device.audio-input: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ziraldo.Stenographer
+        PRODUCT_NAME: Stenographer
+    dependencies:
+      - package: Steno
+        product: StenoModel
+      - package: Steno
+        product: StenoAudio
+      - package: Steno
+        product: StenoStore
+      - package: Steno
+        product: StenoXPC
+      - package: Steno
+        product: StenoNotes
+      - package: MarkdownUI
+        product: MarkdownUI
+      - target: StenoWorker
+  StenoWorker:
+    type: xpc-service
+    platform: macOS
+    sources: [StenoWorker]
+    info:
+      path: StenoWorker/Info.plist
+      properties:
+        CFBundleDisplayName: StenoWorker
+        XPCService:
+          ServiceType: Application
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ziraldo.Stenographer.Worker
+        PRODUCT_NAME: StenoWorker
+    dependencies:
+      - package: Steno
+        product: StenoModel
+      - package: Steno
+        product: StenoPipeline
+      - package: Steno
+        product: StenoXPC
