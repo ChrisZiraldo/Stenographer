@@ -88,7 +88,6 @@ struct SpeakersSettings: View {
 struct GeneralSettings: View {
     @AppStorage(SettingsKey.captureMode) private var mode = CaptureMode.call.rawValue
     @AppStorage(SettingsKey.micDeviceUID) private var micUID = ""
-    @AppStorage(SettingsKey.liveEnabled) private var liveEnabled = true
     @AppStorage(SettingsKey.maxSpeakers) private var maxSpeakers = 0
     @State private var devices = DeviceCatalog.inputDevices()
 
@@ -101,7 +100,6 @@ struct GeneralSettings: View {
                 Text("System default").tag("")
                 ForEach(devices) { Text($0.name).tag($0.uid) }
             }
-            Toggle("Live captions while recording", isOn: $liveEnabled)
             Stepper(value: $maxSpeakers, in: 0...10) {
                 Text(maxSpeakers == 0 ? "Maximum speakers: automatic" : "Maximum speakers: \(maxSpeakers)")
             }

@@ -241,11 +241,12 @@ struct StatusBanners: View {
     }
 }
 
-/// Recording mode and microphone pickers for the toolbar. Same settings as Settings -> General.
+/// Recording mode, microphone and live-caption controls for the toolbar. Same settings as Settings -> General.
 struct CaptureControls: View {
     let disabled: Bool
     @AppStorage(SettingsKey.captureMode) private var mode = CaptureMode.call.rawValue
     @AppStorage(SettingsKey.micDeviceUID) private var micUID = ""
+    @AppStorage(SettingsKey.liveEnabled) private var liveEnabled = true
     @State private var devices = DeviceCatalog.inputDevices()
 
     var body: some View {
@@ -264,5 +265,8 @@ struct CaptureControls: View {
         .help("Microphone")
         .disabled(disabled || mode == CaptureMode.systemOnly.rawValue)
         .onAppear { devices = DeviceCatalog.inputDevices() }
+        Toggle(isOn: $liveEnabled) { Label("Live captions", systemImage: "captions.bubble") }
+            .help("Live captions while recording")
+            .disabled(disabled)
     }
 }
