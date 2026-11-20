@@ -2,8 +2,9 @@
 import Foundation
 import StenoModel
 
-/// Drains one ring into one WAV part at 16 kHz. Used only from the writer thread.
-final class TrackWriter {
+/// Drains one ring into one WAV part at 16 kHz. Used only from the writer thread, so `@unchecked Sendable`:
+/// the converter's input block captures `self`, and the SDK on newer toolchains requires that block to be `@Sendable`.
+final class TrackWriter: @unchecked Sendable {
     static let chunkFrames = 8192
 
     let kind: TrackKind
