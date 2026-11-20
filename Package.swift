@@ -11,12 +11,14 @@ let package = Package(
         .library(name: "StenoStore", targets: ["StenoStore"]),
         .library(name: "StenoXPC", targets: ["StenoXPC"]),
         .library(name: "StenoNotes", targets: ["StenoNotes"]),
+        .library(name: "StenoLlama", targets: ["StenoLlama"]),
         .executable(name: "steno", targets: ["steno"]),
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.18.3", traits: ["Diarizer"]),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.12.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.8.2"),
+        .package(url: "https://github.com/mattt/llama.swift.git", from: "3.0.0"),
     ],
     targets: [
         .target(name: "StenoModel"),
@@ -31,10 +33,11 @@ let package = Package(
         ),
         .target(name: "StenoXPC", dependencies: ["StenoModel"]),
         .target(name: "StenoNotes", dependencies: ["StenoModel", "StenoStore"]),
+        .target(name: "StenoLlama", dependencies: [.product(name: "LlamaSwift", package: "llama.swift")]),
         .executableTarget(
             name: "steno",
             dependencies: [
-                "StenoModel", "StenoAudio", "StenoPipeline", "StenoStore", "StenoNotes",
+                "StenoModel", "StenoAudio", "StenoPipeline", "StenoStore", "StenoNotes", "StenoLlama",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             exclude: ["Info.plist"],
@@ -48,6 +51,7 @@ let package = Package(
         .testTarget(name: "StenoAudioTests", dependencies: ["StenoAudio", "StenoModel"]),
         .testTarget(name: "StenoPipelineTests", dependencies: ["StenoPipeline", "StenoAudio", "StenoModel"]),
         .testTarget(name: "StenoStoreTests", dependencies: ["StenoStore", "StenoAudio", "StenoModel"]),
+        .testTarget(name: "StenoLlamaTests", dependencies: ["StenoLlama"]),
         .testTarget(name: "StenoNotesTests", dependencies: ["StenoNotes", "StenoStore", "StenoModel"]),
     ],
     swiftLanguageModes: [.v6]

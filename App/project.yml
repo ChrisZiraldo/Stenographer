@@ -76,3 +76,5 @@ targets:
         product: StenoPipeline
       - package: Steno
         product: StenoXPC
+      - package: Steno
+        product: StenoLlama

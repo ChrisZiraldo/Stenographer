@@ -1,5 +1,5 @@
 {
-  "originHash" : "fe8e627b72758be48146324024018d2c7ec236367ebf2cda36375ace64612e65",
+  "originHash" : "65e7becc866c717709b21bdf6d2cede60dbb107b34d136b5217dadf5977e240d",
   "pins" : [
     {
       "identity" : "fluidaudio",
@@ -17,6 +17,15 @@
       "state" : {
         "revision" : "92a554cd0d5e8d67cb18993c6054e73fe42c066c",
         "version" : "7.12.0"
+      }
+    },
+    {
+      "identity" : "llama.swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mattt/llama.swift.git",
+      "state" : {
+        "revision" : "dc5b8cb58bfe028f88ade84d1ad0c10842644fb4",
+        "version" : "3.0.0"
       }
     },
     {

@@ -79,7 +79,7 @@ struct GeneratedNotesView: View {
     private func generate() {
         error = nil
         let provider: any LLMProvider
-        do { provider = try LLMSettings.makeProvider() } catch {
+        do { provider = try model.makeLLMProvider() } catch {
             self.error = error.localizedDescription
             return
         }

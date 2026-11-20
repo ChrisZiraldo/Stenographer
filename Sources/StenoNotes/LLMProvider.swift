@@ -1,6 +1,7 @@
 import Foundation
 import FoundationModels
 import Security
+import StenoStore
 
 public protocol LLMProvider: Sendable {
     var id: String { get }
@@ -158,18 +159,33 @@ public enum LLMSettings {
     public static let baseURLKey = "llm.baseURL"
     public static let modelKey = "llm.model"
     public static let maxPromptCharsKey = "llm.maxPromptChars"
+    public static let localModelKey = "llm.local.model"
+    public static let localCustomPathKey = "llm.local.customPath"
+    public static let customModelID = "custom"
     public static let defaultBaseURL = "http://localhost:11434/v1"
     public static let defaultMaxPromptChars = 48_000
 
     public static func registerDefaults(_ defaults: UserDefaults = .standard) {
         defaults.register(defaults: [
-            providerKey: AppleOnDeviceProvider.isAvailable ? "apple" : "openai-compatible",
+            providerKey: AppleOnDeviceProvider.isAvailable ? "apple" : "local",
+            localModelKey: LocalModelCatalog.default.id, localCustomPathKey: "",
             baseURLKey: defaultBaseURL, modelKey: "", maxPromptCharsKey: defaultMaxPromptChars,
         ])
     }
 
-    public static func makeProvider(_ defaults: UserDefaults = .standard) throws -> any LLMProvider {
-        if defaults.string(forKey: providerKey) == "apple" { return AppleOnDeviceProvider() }
+    /// `localGenerator` runs the built-in model; the app passes the XPC worker, the CLI passes the engine directly.
+    public static func makeProvider(
+        _ defaults: UserDefaults = .standard, modelsDirectory: URL? = nil,
+        localGenerator: LocalLLMProvider.Generator? = nil
+    ) throws -> any LLMProvider {
+        switch defaults.string(forKey: providerKey) {
+        case "apple": return AppleOnDeviceProvider()
+        case "local":
+            guard let localGenerator else { throw LLMError.notConfigured("The built-in model is not available here") }
+            let (name, path) = try localModel(defaults, modelsDirectory: modelsDirectory ?? AppPaths.defaultRoot.appendingPathComponent("Models"))
+            return LocalLLMProvider(model: name, modelPath: path, generator: localGenerator)
+        default: break
+        }
         guard let url = URL(string: defaults.string(forKey: baseURLKey) ?? defaultBaseURL) else {
             throw LLMError.notConfigured("Invalid base URL in Settings → AI")
         }
@@ -177,6 +193,26 @@ public enum LLMSettings {
         return OpenAICompatibleProvider(
             baseURL: url, model: defaults.string(forKey: modelKey) ?? "", apiKey: Keychain.apiKey(),
             maxPromptChars: maxChars > 0 ? maxChars : defaultMaxPromptChars)
+    }
+}
+
+extension LLMSettings {
+    /// Display name and file path of the selected built-in model; throws when it is not installed.
+    static func localModel(_ defaults: UserDefaults, modelsDirectory: URL) throws -> (name: String, path: String) {
+        let id = defaults.string(forKey: localModelKey) ?? LocalModelCatalog.default.id
+        if id == customModelID {
+            let path = defaults.string(forKey: localCustomPathKey) ?? ""
+            guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else {
+                throw LLMError.notConfigured("Choose a GGUF model file in Settings → AI")
+            }
+            return (URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent, path)
+        }
+        let model = LocalModelCatalog.model(id: id) ?? LocalModelCatalog.default
+        let store = LocalModelStore(directory: modelsDirectory)
+        guard store.isInstalled(model) else {
+            throw LLMError.notConfigured("Download \(model.name) in Settings → AI first")
+        }
+        return (model.name, store.url(for: model).path)
     }
 }
 

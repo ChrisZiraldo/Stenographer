@@ -1,4 +1,5 @@
 import Foundation
+import StenoLlama
 import StenoModel
 import StenoPipeline
 import StenoXPC
@@ -16,6 +17,7 @@ final class WorkerService: NSObject, StenoWorkerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var liveInput: AsyncStream<LiveChunk>.Continuation?
     private var liveTask: Task<Void, Never>?
+    private var llmTasks: [String: Task<Void, Never>] = [:]
 
     init(connection: NSXPCConnection) {
         self.connection = connection
@@ -100,6 +102,32 @@ final class WorkerService: NSObject, StenoWorkerProtocol, @unchecked Sendable {
             await task?.value
             reply.call()
         }
+    }
+
+    func llmGenerate(
+        requestID: String, modelPath: String, system: String, prompt: String, contextTokens: Int, maxNewTokens: Int,
+        reply: @escaping (String?) -> Void
+    ) {
+        let reply = Reply(call: reply)
+        let client = Reply(call: client)
+        let options = LlamaOptions(contextTokens: contextTokens, maxNewTokens: maxNewTokens)
+        let task = Task {
+            var failure: String?
+            do {
+                for try await delta in LlamaEngine.shared.generate(modelPath: modelPath, system: system, prompt: prompt, options: options) {
+                    client.call?.llmDelta(requestID: requestID, text: delta)
+                }
+            } catch {
+                failure = error.localizedDescription
+            }
+            _ = lock.withLock { llmTasks.removeValue(forKey: requestID) }
+            reply.call(failure)
+        }
+        lock.withLock { llmTasks[requestID] = task }
+    }
+
+    func llmCancel(requestID: String) {
+        lock.withLock { llmTasks[requestID] }?.cancel()
     }
 
     @discardableResult
