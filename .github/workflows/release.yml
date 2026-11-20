@@ -1,0 +1,68 @@
+name: Release
+
+# Cuts a GitHub Release whenever the top-level VERSION file changes on main.
+# Builds the ad-hoc-signed macOS app (Scripts/dist.sh) and attaches the zip.
+# The build is NOT notarized; see OPEN-ME.txt in the zip.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "VERSION"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Apple Silicon with the macOS 26 SDK.
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ steps.ver.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists - skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Will create release $TAG."
+          fi
+
+      - name: Install tools
+        if: steps.check.outputs.exists == 'false'
+        run: brew install xcodegen
+
+      - name: Build ad-hoc distributable
+        if: steps.check.outputs.exists == 'false'
+        run: bash Scripts/dist.sh
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          TAG="v${VERSION}"
+          gh release create "$TAG" \
+            "dist/Stenographer-${VERSION}.zip" \
+            --target "${{ github.sha }}" \
+            --title "Stenographer ${TAG}" \
+            --generate-notes

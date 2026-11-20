@@ -16,3 +16,4 @@ recordings/
 
 # macOS
 .DS_Store
+dist/

@@ -54,6 +54,10 @@ Everything lives in `~/Library/Application Support/Stenographer/`: a SQLite inde
 | `App/` | SwiftUI app and XPC worker (xcodegen project) |
 | `assets/` | Icon and logo source art |
 
+## Releases
+
+Bump the number in `VERSION` and push to `main`. `.github/workflows/release.yml` builds `Scripts/dist.sh` on a macOS 26 runner and publishes a GitHub Release `v<VERSION>` with `Stenographer-<VERSION>.zip`. If that tag already exists, nothing happens. The build is ad-hoc signed, not notarized, so downloaders follow `OPEN-ME.txt` in the zip, and macOS asks for microphone and system-audio access again after each update. Run `bash Scripts/dist.sh` to build the same zip locally into `dist/`.
+
 ## Coming from v1
 
 The original Electron app is tagged `v1-final`. There is no importer.
