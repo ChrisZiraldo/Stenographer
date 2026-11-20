@@ -14,38 +14,6 @@ public struct KnownSpeakerRecord: StenoRecord, Identifiable, Equatable, Hashable
     public var updatedAt: Date
 }
 
-enum VoiceVector {
-    static func normalized(_ v: [Float]) -> [Float] {
-        var sum: Float = 0
-        for x in v { sum += x * x }
-        let norm = sum.squareRoot()
-        return norm > 0 ? v.map { $0 / norm } : v
-    }
-
-    /// 1 − cosine similarity, in [0, 2]; 2 for empty, zero-length or mismatched vectors so they never match.
-    static func cosineDistance(_ a: [Float], _ b: [Float]) -> Float {
-        guard a.count == b.count, !a.isEmpty else { return 2 }
-        var dot: Float = 0, na: Float = 0, nb: Float = 0
-        for i in 0..<a.count {
-            dot += a[i] * b[i]
-            na += a[i] * a[i]
-            nb += b[i] * b[i]
-        }
-        guard na > 0, nb > 0 else { return 2 }
-        return 1 - dot / (na * nb).squareRoot()
-    }
-
-    static func data(_ v: [Float]) -> Data { v.withUnsafeBufferPointer { Data(buffer: $0) } }
-
-    static func vector(_ data: Data) -> [Float] {
-        let n = data.count / MemoryLayout<Float>.size
-        return [Float](unsafeUninitializedCapacity: n) { buffer, count in
-            data.copyBytes(to: UnsafeMutableRawBufferPointer(buffer))
-            count = n
-        }
-    }
-}
-
 public struct VoiceAssignment: Sendable, Equatable {
     public var label: String
     public var knownID: String
@@ -53,12 +21,6 @@ public struct VoiceAssignment: Sendable, Equatable {
 }
 
 public enum VoiceMatcher {
-    /// Maximum cosine distance for a recognition. Measured on 11 real recordings: the same voice across
-    /// meetings sits at 0.03–0.16, different people at ≥ 0.35.
-    public static let threshold: Float = 0.25
-    /// A label whose runner-up library voice is closer than this to its best match is left unnamed.
-    public static let ambiguityMargin: Float = 0.05
-
     /// Assigns library voices to diarized speakers. Each label and each library voice is used at most once;
     /// the closest pairs win.
     public static func assign(embeddings: [String: [Float]], known: [KnownSpeakerRecord]) -> [VoiceAssignment] {
@@ -66,8 +28,8 @@ public enum VoiceMatcher {
         var candidates: [VoiceAssignment] = []
         for (label, embedding) in embeddings {
             let ranked = library.map { ($0.0, VoiceVector.cosineDistance(embedding, $0.1)) }.sorted { $0.1 < $1.1 }
-            guard let best = ranked.first, best.1 <= threshold else { continue }
-            if ranked.count > 1, ranked[1].1 - best.1 < ambiguityMargin { continue }
+            guard let best = ranked.first, best.1 <= VoiceVector.matchThreshold else { continue }
+            if ranked.count > 1, ranked[1].1 - best.1 < VoiceVector.ambiguityMargin { continue }
             candidates.append(VoiceAssignment(label: label, knownID: best.0, distance: best.1))
         }
         candidates.sort { ($0.distance, $0.label) < ($1.distance, $1.label) }

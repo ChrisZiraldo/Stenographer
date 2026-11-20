@@ -10,7 +10,7 @@ struct Steno: AsyncParsableCommand {
         abstract: "Stenographer v2 audio core.",
         subcommands: [
             Transcribe.self, Diarize.self, Devices.self, Record.self, Recover.self, Finalize.self, Import.self,
-            Process.self, Notes.self,
+            Process.self, Notes.self, LiveReplay.self,
         ]
     )
 }

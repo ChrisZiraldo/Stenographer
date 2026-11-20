@@ -19,7 +19,7 @@ private func known(_ name: String, _ embedding: [Float]) -> KnownSpeakerRecord {
 @Suite struct VoiceMatcherTests {
     @Test func voicesAreSeparatedBySeed() {
         #expect(VoiceVector.cosineDistance(voice(1), voice(2)) > 0.5)
-        #expect(VoiceVector.cosineDistance(voice(1), voice(1, noise: 0.05)) < VoiceMatcher.threshold)
+        #expect(VoiceVector.cosineDistance(voice(1), voice(1, noise: 0.05)) < VoiceVector.matchThreshold)
     }
 
     @Test func matchesOnlyWithinThreshold() {

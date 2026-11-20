@@ -58,11 +58,12 @@ final class WorkerService: NSObject, StenoWorkerProtocol, @unchecked Sendable {
         }
     }
 
-    func liveStart(mode: String, reply: @escaping (String?) -> Void) {
+    func liveStart(mode: String, voices: Data, reply: @escaping (String?) -> Void) {
         let reply = Reply(call: reply)
         guard let mode = CaptureMode(rawValue: mode) else { return reply.call("Invalid mode \(mode)") }
         stopLive()
-        let live = LiveTranscriber(transcriber: transcriber, mode: mode)
+        let known = (try? StenoJSON.decoder().decode([KnownVoice].self, from: voices)) ?? []
+        let live = LiveTranscriber(transcriber: transcriber, mode: mode, diarizer: diarizer, knownVoices: known)
         let (input, continuation) = AsyncStream.makeStream(of: LiveChunk.self, bufferingPolicy: .bufferingNewest(200))
         let client = Reply(call: client)
         let task = Task {

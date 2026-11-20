@@ -78,8 +78,11 @@ final class RecorderController {
         })
         if live {
             let worker = worker
+            let voices = ((try? SpeakerLibrary(database).all()) ?? []).map {
+                KnownVoice(name: $0.name, vector: VoiceVector.vector($0.centroid))
+            }
             tasks.append(Task.detached {
-                do { try await worker.startLive(mode: mode) } catch {
+                do { try await worker.startLive(mode: mode, voices: voices) } catch {
                     StenoLog.app.error("Live captions unavailable: \(error.localizedDescription, privacy: .public)")
                 }
                 for await chunk in capture.liveAudio { worker.appendLive(chunk) }

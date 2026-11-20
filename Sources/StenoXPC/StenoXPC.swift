@@ -17,7 +17,7 @@ public enum StenoXPC {
     func prepareModels(reply: @escaping (String?) -> Void)
     /// Replies with `TranscriptDocument` JSON. `maxSpeakers` 0 = automatic.
     func process(sessionDir: String, runID: String, maxSpeakers: Int, reply: @escaping (Data?, String?) -> Void)
-    func liveStart(mode: String, reply: @escaping (String?) -> Void)
+    func liveStart(mode: String, voices: Data, reply: @escaping (String?) -> Void)
     /// `samples` are Float32 little-endian, 16 kHz mono.
     func liveAppend(track: String, startSample: Int64, samples: Data)
     func liveStop(reply: @escaping () -> Void)

@@ -15,6 +15,8 @@ public struct DiarizationOutput: Codable, Sendable {
 /// pyannote community-1 (FluidAudio `OfflineDiarizerManager`) wrapper.
 public actor Diarizer {
     private var managers: [Int: OfflineDiarizerManager] = [:]
+    /// Separate from `managers`: live embedding must not overlap a running offline `process` on the same manager.
+    private var liveEmbedder: OfflineDiarizerManager?
 
     public init() {}
 
@@ -29,6 +31,28 @@ public actor Diarizer {
         nonisolated(unsafe) let manager = try await manager(maxSpeakers: maxSpeakers)
         let result = try await manager.process(file, progressCallback: progress)
         return Self.remap(result)
+    }
+
+    public func prepareLiveEmbedder() async throws {
+        _ = try await embedder()
+    }
+
+    /// One speaker embedding (same space as the voice library) for a clip of 16 kHz mono audio.
+    public func embed(samples: [Float]) async throws -> [Float] {
+        nonisolated(unsafe) let manager = try await embedder()
+        let seconds = Double(samples.count) / 16_000
+        let result = try await manager.embedSpans(
+            audioSource: ArrayAudioSampleSource(samples: samples), spans: [0..<seconds])
+        guard let embedding = result.first else { throw OfflineDiarizationError.processingFailed("No embedding produced") }
+        return embedding
+    }
+
+    private func embedder() async throws -> OfflineDiarizerManager {
+        if let liveEmbedder { return liveEmbedder }
+        let manager = OfflineDiarizerManager(config: .default)
+        try await manager.prepareModels()
+        liveEmbedder = manager
+        return manager
     }
 
     private func manager(maxSpeakers: Int?) async throws -> OfflineDiarizerManager {

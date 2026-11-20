@@ -12,11 +12,15 @@ public actor LiveTranscriber {
     static let minimumASRSamples = 16_000
     static let maxPending = 4
     static let maxConsecutiveErrors = 5
+    /// Shorter clips give voice embeddings too weak to name anyone.
+    static let minimumIdentifySamples = 24_000
 
     public nonisolated let segments: AsyncStream<LiveSegment>
     private let continuation: AsyncStream<LiveSegment>.Continuation
     private let transcriber: Transcriber
     private let mode: CaptureMode
+    private var diarizer: Diarizer?
+    private var identifier: LiveSpeakerIdentifier
     private var vad: VadManager?
     private var vadFailed = false
     private var tracks: [TrackKind: TrackState] = [:]
@@ -45,15 +49,26 @@ public actor LiveTranscriber {
         var historyEnd: Int64 { historyStart + Int64(history.count) }
     }
 
-    public init(transcriber: Transcriber, mode: CaptureMode) {
+    /// With a `diarizer`, system-audio captions are labelled by voice: saved names from `knownVoices`, else "Speaker N".
+    public init(
+        transcriber: Transcriber, mode: CaptureMode, diarizer: Diarizer? = nil, knownVoices: [KnownVoice] = []
+    ) {
         self.transcriber = transcriber
         self.mode = mode
+        self.diarizer = diarizer
+        self.identifier = LiveSpeakerIdentifier(known: knownVoices)
         (segments, continuation) = AsyncStream.makeStream(of: LiveSegment.self)
     }
 
     public func prepare() async throws {
         if vad == nil { vad = try await VadManager(config: VadConfig(defaultThreshold: 0.75)) }
         try await transcriber.prepare()
+        if let diarizer {
+            do { try await diarizer.prepareLiveEmbedder() } catch {
+                StenoLog.live.error("Live speaker models unavailable: \(error.localizedDescription, privacy: .public)")
+                self.diarizer = nil
+            }
+        }
     }
 
     public func append(_ chunk: LiveChunk) async {
@@ -168,7 +183,7 @@ public actor LiveTranscriber {
                 let end = start + Double(segment.samples.count) / Double(Self.sampleRate)
                 continuation.yield(
                     LiveSegment(
-                        track: segment.track, speakerLabel: label(for: segment.track), start: start, end: end,
+                        track: segment.track, speakerLabel: await label(for: segment), start: start, end: end,
                         text: text, latency: Date().timeIntervalSince(wallStart.addingTimeInterval(end))))
             } catch {
                 consecutiveErrors += 1
@@ -184,8 +199,15 @@ public actor LiveTranscriber {
         drainTask = nil
     }
 
-    private func label(for track: TrackKind) -> String {
-        switch track {
+    private func label(for segment: Segment) async -> String {
+        if segment.track != .mic, let diarizer, segment.samples.count >= Self.minimumIdentifySamples {
+            do {
+                return identifier.identify(try await diarizer.embed(samples: segment.samples))
+            } catch {
+                StenoLog.live.error("Live speaker ID failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        return switch segment.track {
         case .mic: mode == .inPerson ? "Room" : "Me"
         case .system, .imported: "Others"
         }

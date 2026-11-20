@@ -44,6 +44,7 @@ final class WorkerClient: @unchecked Sendable {
     private var pendingProcess: [UUID: CheckedContinuation<TranscriptDocument, Error>] = [:]
     private var llmStreams: [String: AsyncThrowingStream<String, Error>.Continuation] = [:]
     private var liveMode: CaptureMode?
+    private var liveVoices: [KnownVoice] = []
     private var liveBatches: [TrackKind: (start: Int64, samples: [Float])] = [:]
 
     private func proxy(onError: @escaping @Sendable (Error) -> Void = { _ in }) -> StenoWorkerProtocol {
@@ -71,7 +72,7 @@ final class WorkerClient: @unchecked Sendable {
     }
 
     private func connectionLost() {
-        let (failed, mode, llm) = lock.withLock { () -> ([CheckedContinuation<TranscriptDocument, Error>], CaptureMode?, [AsyncThrowingStream<String, Error>.Continuation]) in
+        let (failed, live, llm) = lock.withLock { () -> ([CheckedContinuation<TranscriptDocument, Error>], (CaptureMode, [KnownVoice])?, [AsyncThrowingStream<String, Error>.Continuation]) in
             connection?.invalidationHandler = nil
             connection?.interruptionHandler = nil
             connection?.invalidate()
@@ -81,14 +82,14 @@ final class WorkerClient: @unchecked Sendable {
             liveBatches.removeAll()
             let llm = Array(llmStreams.values)
             llmStreams.removeAll()
-            return (failed, liveMode, llm)
+            return (failed, liveMode.map { ($0, liveVoices) }, llm)
         }
         llm.forEach { $0.finish(throwing: WorkerError.crashed) }
         StenoLog.app.error("Worker connection lost (\(failed.count) jobs in flight)")
         failed.forEach { $0.resume(throwing: WorkerError.crashed) }
-        if let mode {
+        if let (mode, voices) = live {
             Task {
-                try? await self.startLive(mode: mode)
+                try? await self.startLive(mode: mode, voices: voices)
                 self.onLiveRestarted?()
             }
         }
@@ -143,15 +144,17 @@ final class WorkerClient: @unchecked Sendable {
         }
     }
 
-    func startLive(mode: CaptureMode) async throws {
+    func startLive(mode: CaptureMode, voices: [KnownVoice]) async throws {
+        let encoded = try StenoJSON.encoder().encode(voices)
         lock.withLock {
             liveMode = mode
+            liveVoices = voices
             liveBatches.removeAll()
         }
         let message: String? = try await withCheckedThrowingContinuation { cont in
             let once = OnceFlag()
             proxy(onError: { if once.take() { cont.resume(throwing: $0) } })
-                .liveStart(mode: mode.rawValue) { if once.take() { cont.resume(returning: $0) } }
+                .liveStart(mode: mode.rawValue, voices: encoded) { if once.take() { cont.resume(returning: $0) } }
         }
         if let message { throw WorkerError.remote(message) }
     }
