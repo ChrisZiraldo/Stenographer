@@ -118,17 +118,3 @@ struct Import: ParsableCommand {
         print("imported \(String(format: "%.1f", m.durationSeconds)) s → \(out)")
     }
 }
-
-struct ImportV1: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "import-v1", abstract: "Import Stenographer v1 meetings into the v2 library.")
-    @Option(help: "v1 data folder (default ~/Library/Application Support/Stenographer).") var v1Root: String?
-    @Option(help: "v2 data root (default ~/Library/Application Support/Stenographer2).") var dataRoot: String?
-
-    func run() throws {
-        let paths = try dataRoot.map { try AppPaths(root: absoluteURL($0)) } ?? AppPaths()
-        let database = try StenoDatabase(paths: paths)
-        let importer = V1Importer(database: database, v1Root: v1Root.map(absoluteURL) ?? V1Importer.defaultRoot)
-        print(try importer.run().summary)
-    }
-}

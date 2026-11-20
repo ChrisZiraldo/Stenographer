@@ -7,7 +7,7 @@ public struct AppPaths: Sendable {
 
     public static var defaultRoot: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Stenographer2", isDirectory: true)
+            .appendingPathComponent("Stenographer", isDirectory: true)
     }
 
     public init(root: URL = AppPaths.defaultRoot) throws {
@@ -17,6 +17,8 @@ public struct AppPaths: Sendable {
 
     public var sessionsDirectory: URL { root.appendingPathComponent("Sessions", isDirectory: true) }
     public var databaseURL: URL { root.appendingPathComponent("stenographer.sqlite") }
+    /// Downloaded language models; created on first download.
+    public var modelsDirectory: URL { root.appendingPathComponent("Models", isDirectory: true) }
 
     public func sessionDirectory(folder: String) -> URL {
         sessionsDirectory.appendingPathComponent(folder, isDirectory: true)

@@ -1,6 +1,7 @@
 import Foundation
 import StenoAudio
 import StenoModel
+import StenoNotes
 import StenoXPC
 
 enum WorkerError: Error, LocalizedError {
@@ -19,12 +20,15 @@ enum WorkerError: Error, LocalizedError {
 final class ClientReceiver: NSObject, StenoClientProtocol, @unchecked Sendable {
     var onLiveSegment: (@Sendable (LiveSegment) -> Void)?
     var onProgress: (@Sendable (String, Double) -> Void)?
+    var onLLMDelta: (@Sendable (String, String) -> Void)?
 
     func liveSegment(_ json: Data) {
         if let segment = try? StenoJSON.decoder().decode(LiveSegment.self, from: json) { onLiveSegment?(segment) }
     }
 
     func processProgress(stage: String, fraction: Double) { onProgress?(stage, fraction) }
+
+    func llmDelta(requestID: String, text: String) { onLLMDelta?(requestID, text) }
 }
 
 /// Owns the XPC connection to StenoWorker and recreates it when the worker dies.
@@ -38,6 +42,7 @@ final class WorkerClient: @unchecked Sendable {
     private let lock = NSLock()
     private var connection: NSXPCConnection?
     private var pendingProcess: [UUID: CheckedContinuation<TranscriptDocument, Error>] = [:]
+    private var llmStreams: [String: AsyncThrowingStream<String, Error>.Continuation] = [:]
     private var liveMode: CaptureMode?
     private var liveBatches: [TrackKind: (start: Int64, samples: [Float])] = [:]
 
@@ -45,6 +50,12 @@ final class WorkerClient: @unchecked Sendable {
         lock.withLock {
             if connection == nil { connection = makeConnection() }
             return connection!.remoteObjectProxyWithErrorHandler(onError) as! StenoWorkerProtocol
+        }
+    }
+
+    init() {
+        receiver.onLLMDelta = { [weak self] id, text in
+            _ = self?.lock.withLock { self?.llmStreams[id] }?.yield(text)
         }
     }
 
@@ -60,7 +71,7 @@ final class WorkerClient: @unchecked Sendable {
     }
 
     private func connectionLost() {
-        let (failed, mode) = lock.withLock { () -> ([CheckedContinuation<TranscriptDocument, Error>], CaptureMode?) in
+        let (failed, mode, llm) = lock.withLock { () -> ([CheckedContinuation<TranscriptDocument, Error>], CaptureMode?, [AsyncThrowingStream<String, Error>.Continuation]) in
             connection?.invalidationHandler = nil
             connection?.interruptionHandler = nil
             connection?.invalidate()
@@ -68,8 +79,11 @@ final class WorkerClient: @unchecked Sendable {
             let failed = Array(pendingProcess.values)
             pendingProcess.removeAll()
             liveBatches.removeAll()
-            return (failed, liveMode)
+            let llm = Array(llmStreams.values)
+            llmStreams.removeAll()
+            return (failed, liveMode, llm)
         }
+        llm.forEach { $0.finish(throwing: WorkerError.crashed) }
         StenoLog.app.error("Worker connection lost (\(failed.count) jobs in flight)")
         failed.forEach { $0.resume(throwing: WorkerError.crashed) }
         if let mode {
@@ -105,6 +119,27 @@ final class WorkerClient: @unchecked Sendable {
                         cont.resume(throwing: WorkerError.remote(message ?? "Invalid worker reply"))
                     }
                 }
+        }
+    }
+
+    /// Streams text from the built-in model, which runs in the worker so a crash or memory spike can't take the app down.
+    func generate(modelPath: String, system: String, prompt: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let id = UUID().uuidString
+            lock.withLock { llmStreams[id] = continuation }
+            let finish: @Sendable (Error?) -> Void = { [weak self] error in
+                let cont = self?.lock.withLock { self?.llmStreams.removeValue(forKey: id) }
+                cont?.finish(throwing: error)
+            }
+            continuation.onTermination = { [weak self] reason in
+                guard case .cancelled = reason else { return }
+                self?.lock.withLock { _ = self?.llmStreams.removeValue(forKey: id) }
+                self?.proxy().llmCancel(requestID: id)
+            }
+            proxy(onError: { finish($0) }).llmGenerate(
+                requestID: id, modelPath: modelPath, system: system, prompt: prompt,
+                contextTokens: LocalLLM.contextTokens, maxNewTokens: LocalLLM.maxNewTokens
+            ) { message in finish(message.map { WorkerError.remote($0) }) }
         }
     }
 

@@ -33,8 +33,6 @@ struct StenographerApp: App {
                 Button("Import Audio…") { model?.importAudio() }
                     .keyboardShortcut("o")
                     .disabled(model == nil)
-                Button("Import from Stenographer v1…") { model?.importV1() }
-                    .disabled(model == nil || model?.importingV1 == true)
             }
             CommandGroup(after: .saveItem) {
                 Button("Export Markdown…") { model?.exportMarkdown() }

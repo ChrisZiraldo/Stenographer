@@ -5,7 +5,7 @@ A native macOS app that records meetings, transcribes them locally, labels who s
 - **Capture:** system audio through Core Audio process taps plus your microphone, written continuously to crash-safe 16 kHz WAV parts with sample-aligned timing. Device changes and sleep start a new part; a crash is repaired on next launch.
 - **Transcription:** Parakeet TDT 0.6B v3 via [FluidAudio](https://github.com/FluidInference/FluidAudio) (Core ML / Neural Engine). Live captions while recording.
 - **Speakers:** pyannote community-1 diarization. Name a speaker once and choose "Remember this voice"; later meetings are labelled automatically. A People panel lists everyone with their meeting history.
-- **Notes:** your own notes plus AI-generated notes from templates, using Apple's on-device model or any OpenAI-compatible endpoint (Ollama, LM Studio, cloud). Markdown export.
+- **Notes:** your own notes plus AI-generated notes from templates, using a built-in llama.cpp model (downloaded once from Settings → AI, then fully offline; no Ollama needed), Apple's on-device model, or any OpenAI-compatible endpoint (Ollama, LM Studio, cloud). Markdown export.
 - **Isolation:** speech models run in an XPC worker, so a model crash never takes down a recording.
 
 ## Requirements
@@ -33,11 +33,11 @@ Microphone, and System Audio Recording under System Settings → Privacy & Secur
 
 ## CLI
 
-`steno` exposes every stage: `devices`, `record`, `recover`, `finalize`, `import`, `transcribe`, `diarize`, `process`, `notes` and `import-v1`. Run `steno --help`. Build it signed with `Scripts/sign-cli.sh`, and use `Scripts/capture-check.sh` for a timed system-audio capture check.
+`steno` exposes every stage: `devices`, `record`, `recover`, `finalize`, `import`, `transcribe`, `diarize`, `process` and `notes`. Run `steno --help`. Build it signed with `Scripts/sign-cli.sh`, and use `Scripts/capture-check.sh` for a timed system-audio capture check.
 
 ## Data
 
-Everything lives in `~/Library/Application Support/Stenographer2/`: a SQLite index plus one folder per session (manifest, audio, transcripts). The manifest is the source of truth for capture; the database is an index that startup recovery rebuilds.
+Everything lives in `~/Library/Application Support/Stenographer/`: a SQLite index plus one folder per session (manifest, audio, transcripts). The manifest is the source of truth for capture; the database is an index that startup recovery rebuilds.
 
 ## Layout
 
@@ -46,7 +46,8 @@ Everything lives in `~/Library/Application Support/Stenographer2/`: a SQLite ind
 | `Sources/StenoModel` | Shared types, manifest IO |
 | `Sources/StenoAudio` | Capture engine, WAV storage, finalize, import |
 | `Sources/StenoPipeline` | ASR, diarization, transcript merge, live captions |
-| `Sources/StenoStore` | SQLite store, job queue, recovery, speaker library, v1 importer |
+| `Sources/StenoStore` | SQLite store, job queue, recovery, speaker library |
+| `Sources/StenoLlama` | Built-in llama.cpp engine (runs in the XPC worker) |
 | `Sources/StenoNotes` | LLM providers, templates, note generation |
 | `Sources/StenoXPC` | App/worker XPC protocols |
 | `Sources/steno` | CLI |
@@ -55,7 +56,7 @@ Everything lives in `~/Library/Application Support/Stenographer2/`: a SQLite ind
 
 ## Coming from v1
 
-The original Electron app is tagged `v1-final`. **File → Import from Stenographer v1…** (or `steno import-v1`) brings its meetings, notes and recordings over; it reads a copy of the v1 database and is safe to repeat. Not carried over: spaces, todos, custom templates, dictation, rich-text notes.
+The original Electron app is tagged `v1-final`. There is no importer.
 
 ## License
 

@@ -3,6 +3,7 @@ import StenoModel
 import StenoNotes
 import StenoStore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     let model: AppModel
@@ -11,7 +12,7 @@ struct SettingsView: View {
         TabView {
             Tab("General", systemImage: "gearshape") { GeneralSettings() }
             Tab("Speakers", systemImage: "person.wave.2") { SpeakersSettings(model: model) }
-            Tab("AI", systemImage: "sparkles") { AISettings() }
+            Tab("AI", systemImage: "sparkles") { AISettings(model: model) }
             Tab("Storage", systemImage: "internaldrive") { StorageSettings(model: model) }
         }
         .frame(width: 460)
@@ -110,6 +111,13 @@ struct GeneralSettings: View {
 }
 
 struct AISettings: View {
+    let model: AppModel
+    @AppStorage(LLMSettings.localModelKey) private var localModelID = LocalModelCatalog.default.id
+    @AppStorage(LLMSettings.localCustomPathKey) private var customPath = ""
+    @State private var downloading: String?
+    @State private var progress = 0.0
+    @State private var downloadTask: Task<Void, Never>?
+    @State private var installedRevision = 0
     @AppStorage(LLMSettings.providerKey) private var provider = "apple"
     @AppStorage(LLMSettings.baseURLKey) private var baseURL = LLMSettings.defaultBaseURL
     @AppStorage(LLMSettings.modelKey) private var modelName = ""
@@ -122,8 +130,10 @@ struct AISettings: View {
         Form {
             Picker("Provider", selection: $provider) {
                 Text(AppleOnDeviceProvider.isAvailable ? "Apple Intelligence (on device)" : "Apple Intelligence (unavailable)").tag("apple")
+                Text("Built-in model (llama.cpp, fully offline)").tag("local")
                 Text("OpenAI-compatible (Ollama, LM Studio, cloud)").tag("openai-compatible")
             }
+            if provider == "local" { localSection }
             if provider == "openai-compatible" {
                 TextField("Base URL", text: $baseURL)
                 TextField("Model", text: $modelName, prompt: Text("e.g. llama3.2"))
@@ -140,12 +150,81 @@ struct AISettings: View {
         }
     }
 
+    private var store: LocalModelStore { LocalModelStore(paths: model.paths) }
+
+    @ViewBuilder private var localSection: some View {
+        let _ = installedRevision
+        ForEach(LocalModelCatalog.all) { entry in
+            HStack {
+                Image(systemName: localModelID == entry.id ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(localModelID == entry.id ? Color.accentColor : .secondary)
+                    .onTapGesture { localModelID = entry.id }
+                VStack(alignment: .leading) {
+                    Text(entry.name)
+                    Text("\(entry.summary) \(ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if downloading == entry.id {
+                    ProgressView(value: progress).frame(width: 80)
+                    Button("Cancel") { downloadTask?.cancel() }
+                } else if store.isInstalled(entry) {
+                    Button(role: .destructive) { remove(entry) } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
+                } else {
+                    Button("Download") { download(entry) }.disabled(downloading != nil)
+                }
+            }
+        }
+        HStack {
+            Image(systemName: localModelID == LLMSettings.customModelID ? "largecircle.fill.circle" : "circle")
+                .foregroundStyle(localModelID == LLMSettings.customModelID ? Color.accentColor : .secondary)
+                .onTapGesture { if !customPath.isEmpty { localModelID = LLMSettings.customModelID } }
+            VStack(alignment: .leading) {
+                Text("My own GGUF")
+                Text(customPath.isEmpty ? "Any chat model in GGUF format" : URL(fileURLWithPath: customPath).lastPathComponent)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Choose…") { chooseGGUF() }
+        }
+    }
+
+    private func download(_ entry: LocalModel) {
+        downloading = entry.id
+        progress = 0
+        downloadTask = Task {
+            do {
+                try await store.download(entry) { value in Task { @MainActor in progress = value } }
+                localModelID = entry.id
+            } catch is CancellationError {
+            } catch {
+                model.alert = error.localizedDescription
+            }
+            downloading = nil
+            installedRevision += 1
+        }
+    }
+
+    private func remove(_ entry: LocalModel) {
+        do { try store.delete(entry) } catch { model.alert = error.localizedDescription }
+        installedRevision += 1
+    }
+
+    private func chooseGGUF() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "gguf") ?? .data]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        customPath = url.path
+        localModelID = LLMSettings.customModelID
+    }
+
     private func test() {
         testing = true
         testOutput = ""
         Task {
             do {
-                let p = try LLMSettings.makeProvider()
+                let p = try model.makeLLMProvider()
                 for try await delta in p.stream(system: "You are a helpful assistant.", prompt: "Reply with OK") {
                     testOutput += delta
                 }

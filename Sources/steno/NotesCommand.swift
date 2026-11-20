@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import StenoLlama
 import StenoModel
 import StenoNotes
 import StenoStore
@@ -11,7 +12,8 @@ struct Notes: AsyncParsableCommand {
     @Argument var dir: String
     @Option(help: "Template id: general, 1-1, standup, interview, planning, design-review, retrospective.") var template = "general"
     @Option(help: "OpenAI-compatible base URL.") var baseURL = "http://localhost:11434/v1"
-    @Option var model: String
+    @Option(help: "Model name for the OpenAI-compatible server (not needed with --gguf).") var model = ""
+    @Option(help: "Run a local GGUF file with the built-in llama.cpp engine instead of a server.") var gguf: String?
     @Option var maxPromptChars = 48_000
 
     func run() async throws {
@@ -39,10 +41,22 @@ struct Notes: AsyncParsableCommand {
         try RunRepository(db).save(document: doc, sessionID: id)
         try sessions.transition(id: id, to: .ready)
 
-        let provider = OpenAICompatibleProvider(baseURL: base, model: model, apiKey: nil, maxPromptChars: maxPromptChars)
+        let provider: any LLMProvider
+        if let gguf {
+            let path = absoluteURL(gguf).path
+            provider = LocalLLMProvider(model: URL(fileURLWithPath: path).lastPathComponent, modelPath: path) { path, system, prompt in
+                LlamaEngine.shared.generate(
+                    modelPath: path, system: system, prompt: prompt,
+                    options: LlamaOptions(contextTokens: LocalLLM.contextTokens, maxNewTokens: LocalLLM.maxNewTokens))
+            }
+        } else {
+            guard !model.isEmpty else { throw ValidationError("pass --model (server) or --gguf (built-in engine)") }
+            provider = OpenAICompatibleProvider(baseURL: base, model: model, apiKey: nil, maxPromptChars: maxPromptChars)
+        }
         for try await delta in NoteGenerator(database: db).generate(sessionID: id, template: template, provider: provider) {
             FileHandle.standardOutput.write(Data(delta.utf8))
         }
+        LlamaEngine.shared.unload()
         print("\n\ntitle: \(try sessions.get(id: id)?.title ?? "")")
     }
 }

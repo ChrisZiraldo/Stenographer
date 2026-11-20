@@ -185,30 +185,6 @@ final class AppModel {
         }
     }
 
-    var importingV1 = false
-
-    func importV1() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.directoryURL = V1Importer.defaultRoot
-        panel.message = "Choose the Stenographer v1 data folder"
-        panel.prompt = "Import"
-        guard panel.runModal() == .OK, let root = panel.url else { return }
-        let database = database
-        importingV1 = true
-        Task {
-            defer { importingV1 = false }
-            do {
-                let report = try await Task.detached { try V1Importer(database: database, v1Root: root).run() }.value
-                for id in report.toProcess { try await jobs.enqueueProcess(sessionID: id) }
-                alert = "Stenographer v1 import — \(report.summary)"
-            } catch {
-                alert = "Stenographer v1 import failed: \(error.localizedDescription)"
-            }
-        }
-    }
-
     func exportMarkdown() {
         guard let session = session(id: selection) else { return }
         let panel = NSSavePanel()
