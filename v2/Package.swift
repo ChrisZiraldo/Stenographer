@@ -34,7 +34,7 @@ let package = Package(
         .executableTarget(
             name: "steno",
             dependencies: [
-                "StenoModel", "StenoAudio", "StenoPipeline", "StenoStore",
+                "StenoModel", "StenoAudio", "StenoPipeline", "StenoStore", "StenoNotes",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             exclude: ["Info.plist"],
