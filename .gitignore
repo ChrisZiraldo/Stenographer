@@ -1,26 +1,18 @@
-# Dependencies
-node_modules/
-
 # Build output
-.vite/
-out/
+.build/
+.swiftpm/
+App/*.xcodeproj/
+App/*/Info.plist
+App/*/*.entitlements
 
-# Environment — contains API keys
+# Generated test fixtures
+Fixtures/generated/
+
+# Environment - may contain API keys
 .env
 
-# Recordings — generated output, not source
+# Recordings - generated output, not source
 recordings/
 
 # macOS
 .DS_Store
-
-# Logs
-npm-debug.log*
-
-# Stenographer v2 (Swift)
-v2/.build/
-v2/.swiftpm/
-v2/App/*.xcodeproj/
-v2/App/*/Info.plist
-v2/App/*/*.entitlements
-v2/Fixtures/generated/
