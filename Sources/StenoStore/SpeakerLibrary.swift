@@ -164,6 +164,22 @@ public struct SpeakerLibrary: Sendable {
         }
     }
 
+    /// Confirms an automatic match: adds this meeting's voice to the matched library voice and marks the speaker as
+    /// confirmed, so it is not counted twice and later recognition passes leave it alone.
+    @discardableResult
+    public func confirmMatch(ofSpeaker speakerID: String) throws -> KnownSpeakerRecord {
+        let paths = self.db.paths
+        return try db.writer.write { db in
+            guard let speaker = try SpeakerRecord.fetchOne(db, key: speakerID), speaker.autoMatched,
+                let knownID = speaker.knownSpeakerId, let known = try KnownSpeakerRecord.fetchOne(db, key: knownID)
+            else { throw StoreError.notFound("Recognized speaker \(speakerID)") }
+            guard let embedding = try Self.embedding(db, paths: paths, speakerID: speakerID) else { throw StoreError.noVoiceEmbedding }
+            let updated = try Self.remember(db, name: known.name, embedding: embedding)
+            try db.execute(sql: "UPDATE speaker SET auto_matched = 0 WHERE id = ?", arguments: [speakerID])
+            return updated
+        }
+    }
+
     public func rename(id: String, to name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }

@@ -77,6 +77,25 @@ private func known(_ name: String, _ embedding: [Float]) -> KnownSpeakerRecord {
         #expect(VoiceVector.cosineDistance(centroid, voice(1)) < 0.05)
     }
 
+    @Test func confirmingAMatchAddsTheSampleOnceAndKeepsTheName() throws {
+        let f = try Fixture()
+        let library = SpeakerLibrary(f.db)
+        let a = try readySession(f, voices: ["S1": voice(1), "S2": voice(2)])
+        let b = try readySession(f, voices: ["S1": voice(1, noise: 0.1), "S2": voice(2)])
+        try library.rememberVoice(ofSpeaker: "\(a.runID):S1", as: "Alex")
+        try library.label(runID: b.runID)
+        let matched = try #require(try f.runs.speakers(runID: b.runID).first { $0.label == "S1" })
+        #expect(matched.autoMatched && matched.displayName == "Alex")
+
+        let updated = try library.confirmMatch(ofSpeaker: matched.id)
+        #expect(updated.sampleCount == 2)
+        let after = try #require(try f.runs.speakers(runID: b.runID).first { $0.label == "S1" })
+        #expect(!after.autoMatched && after.displayName == "Alex" && after.knownSpeakerId == matched.knownSpeakerId)
+        // Already confirmed: a second confirm must not count the same meeting again.
+        #expect(throws: StoreError.self) { try library.confirmMatch(ofSpeaker: matched.id) }
+        #expect(try library.all().first?.sampleCount == 2)
+    }
+
     @Test func recognizesARememberedVoiceInOtherSessionsEvenWhenLabelsDiffer() throws {
         let f = try Fixture()
         let library = SpeakerLibrary(f.db)

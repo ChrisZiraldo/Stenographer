@@ -98,6 +98,7 @@ struct TranscriptView: View {
                 renaming = speaker
             }
             if speaker.autoMatched {
+                Button("Confirm it's \(speaker.name)") { confirm(speaker) }
                 Button("Not \(speaker.name)") { clearName(speaker) }
             }
             Menu("Merge into") {
@@ -116,7 +117,7 @@ struct TranscriptView: View {
             .padding(.vertical, 1)
             .background(color(speaker).opacity(0.2), in: Capsule())
             .foregroundStyle(color(speaker))
-            .help(speaker.autoMatched ? "Recognized from your speaker library" : "")
+            .help(speaker.autoMatched ? "Recognized from your speaker library. Use the menu to confirm it." : "")
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -154,6 +155,15 @@ struct TranscriptView: View {
             model.alert = error.localizedDescription
         }
         renaming = nil
+        reload()
+    }
+
+    private func confirm(_ speaker: SpeakerRecord) {
+        do {
+            try SpeakerLibrary(model.database).confirmMatch(ofSpeaker: speaker.id)
+        } catch {
+            model.alert = error.localizedDescription
+        }
         reload()
     }
 
