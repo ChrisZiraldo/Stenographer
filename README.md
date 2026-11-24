@@ -1,3 +1,5 @@
+![Stenographer](assets/logo.png)
+
 # Stenographer
 
 A native macOS app that records meetings, transcribes them locally, labels who said what, and turns them into notes. Audio is processed on-device; nothing leaves your Mac unless you point note generation at a remote LLM.
