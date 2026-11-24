@@ -14,11 +14,33 @@ struct TranscriptView: View {
     @State private var newName = ""
     @State private var canRemember = false
     @State private var remember = true
+    @State private var finding = false
+    @State private var query = ""
+    @State private var matchIndex = 0
+    @FocusState private var findFocused: Bool
 
     static let palette: [Color] = [.blue, .green, .orange, .purple, .pink, .teal, .brown, .indigo]
 
     private var currentLineID: Int64? {
         lines.last { $0.start <= playback.currentTime }?.id
+    }
+
+    /// Lines containing the find text, in transcript order.
+    private var matches: [TranscriptLine] {
+        query.isEmpty ? [] : lines.filter { !Self.ranges(of: query, in: $0.text).isEmpty }
+    }
+
+    private static func ranges(of query: String, in text: String) -> [Range<String.Index>] {
+        guard !query.isEmpty else { return [] }
+        var found: [Range<String.Index>] = []
+        var from = text.startIndex
+        while from < text.endIndex,
+            let r = text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive], range: from..<text.endIndex)
+        {
+            found.append(r)
+            from = r.upperBound
+        }
+        return found
     }
 
     var body: some View {
@@ -32,6 +54,13 @@ struct TranscriptView: View {
             }
         }
         .task(id: session.currentRunId) { reload() }
+        .background {
+            // Control-F opens find. Command-F stays with the library search in the sidebar.
+            Button("Find in Transcript") { openFind() }
+                .keyboardShortcut("f", modifiers: .control)
+                .opacity(0)
+                .allowsHitTesting(false)
+        }
         .sheet(item: $renaming) { speaker in
             VStack(alignment: .leading, spacing: 12) {
                 Text("Rename \(speaker.name)").font(.headline)
@@ -63,14 +92,20 @@ struct TranscriptView: View {
             .font(.callout)
             .padding(.horizontal)
             .padding(.bottom, 4)
+            if finding { findBar }
             ScrollViewReader { proxy in
                 List(lines) { line in
                     row(line)
-                        .listRowBackground(line.id == currentLineID ? Color.accentColor.opacity(0.15) : Color.clear)
+                        .listRowBackground(rowBackground(line))
                         .contentShape(Rectangle())
                         .onTapGesture { playback.seek(to: line.start) }
                         .id(line.id)
                 }
+                .onChange(of: query) {
+                    matchIndex = 0
+                    scrollToMatch(proxy)
+                }
+                .onChange(of: matchIndex) { scrollToMatch(proxy) }
                 .onChange(of: currentLineID) {
                     if follow, playback.isPlaying, let id = currentLineID {
                         withAnimation { proxy.scrollTo(id, anchor: .center) }
@@ -84,9 +119,73 @@ struct TranscriptView: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("[\(Format.timestamp(line.start))]").monospacedDigit().foregroundStyle(.secondary)
             speakerChip(line.speaker)
-            Text(line.text).textSelection(.enabled)
+            Text(highlighted(line)).textSelection(.enabled)
         }
         .padding(.vertical, 2)
+    }
+
+    private var findBar: some View {
+        let count = matches.count
+        return HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Find in transcript", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .focused($findFocused)
+                .onSubmit { step(1) }
+                .onExitCommand { closeFind() }
+                .frame(maxWidth: 280)
+            Text(query.isEmpty ? "" : count == 0 ? "No matches" : "\(matchIndex + 1) of \(count)")
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Button { step(-1) } label: { Image(systemName: "chevron.up") }
+                .keyboardShortcut(.return, modifiers: .shift)
+                .disabled(count == 0)
+                .help("Previous match")
+            Button { step(1) } label: { Image(systemName: "chevron.down") }
+                .disabled(count == 0)
+                .help("Next match")
+            Spacer()
+            Button("Done") { closeFind() }
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal)
+        .padding(.bottom, 6)
+    }
+
+    private func openFind() {
+        finding = true
+        findFocused = true
+    }
+
+    private func closeFind() {
+        finding = false
+        query = ""
+    }
+
+    private func step(_ delta: Int) {
+        let count = matches.count
+        guard count > 0 else { return }
+        matchIndex = (matchIndex + delta + count) % count
+    }
+
+    private func scrollToMatch(_ proxy: ScrollViewProxy) {
+        let all = matches
+        guard all.indices.contains(matchIndex) else { return }
+        withAnimation { proxy.scrollTo(all[matchIndex].id, anchor: .center) }
+    }
+
+    private func rowBackground(_ line: TranscriptLine) -> Color {
+        let all = matches
+        if all.indices.contains(matchIndex), all[matchIndex].id == line.id { return .orange.opacity(0.25) }
+        return line.id == currentLineID ? Color.accentColor.opacity(0.15) : .clear
+    }
+
+    private func highlighted(_ line: TranscriptLine) -> AttributedString {
+        var text = AttributedString(line.text)
+        for range in Self.ranges(of: query, in: line.text) {
+            if let r = Range(range, in: text) { text[r].backgroundColor = .yellow.opacity(0.5) }
+        }
+        return text
     }
 
     private func speakerChip(_ speaker: SpeakerRecord) -> some View {
