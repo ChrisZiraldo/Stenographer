@@ -30,7 +30,45 @@ public actor Diarizer {
         // OfflineDiarizerManager is not Sendable; this actor serializes all use of it.
         nonisolated(unsafe) let manager = try await manager(maxSpeakers: maxSpeakers)
         let result = try await manager.process(file, progressCallback: progress)
-        return Self.remap(result)
+        let output = Self.remap(result)
+        return try await separatingOutliers(output, file: file)
+    }
+
+    /// A turn this far from its speaker's voice (cosine distance) is a different person the clustering absorbed.
+    /// Measured on a 32-minute call: 90% of the dominant speaker's turns are under 0.48; a different person's
+    /// reply was 0.62 and 1.03.
+    static let outlierDistance: Float = 0.6
+    /// Shorter clips give embeddings too noisy to judge.
+    static let outlierMinTurnSeconds = 2.0
+
+    /// Moves turns that don't match their speaker's voice to one extra speaker, so they are no longer attributed
+    /// to the speaker whose cluster absorbed them. The extra speaker has no stored voice: its turns come from
+    /// several people, so it must not be matched against, or saved to, the voice library.
+    func separatingOutliers(_ output: DiarizationOutput, file: URL) async throws -> DiarizationOutput {
+        let candidates = output.turns.indices.filter {
+            output.turns[$0].end - output.turns[$0].start >= Self.outlierMinTurnSeconds
+                && output.speakerDatabase[output.turns[$0].speaker] != nil
+        }
+        guard !candidates.isEmpty else { return output }
+        nonisolated(unsafe) let manager = try await embedder()
+        let source = try AudioSourceFactory().makeDiskBackedSource(from: file, targetSampleRate: 16_000).source
+        let embeddings = try await manager.embedSpans(
+            audioSource: source, spans: candidates.map { output.turns[$0].start..<output.turns[$0].end })
+        guard embeddings.count == candidates.count else { return output }
+        let centroids = output.speakerDatabase.mapValues(VoiceVector.normalized)
+        var turns = output.turns
+        let label = "S\(output.speakerDatabase.count + 1)"
+        var moved = 0
+        for (index, embedding) in zip(candidates, embeddings) {
+            guard let centroid = centroids[turns[index].speaker],
+                VoiceVector.cosineDistance(VoiceVector.normalized(embedding), centroid) > Self.outlierDistance
+            else { continue }
+            turns[index].speaker = label
+            moved += 1
+        }
+        guard moved > 0 else { return output }
+        StenoLog.pipeline.info("Diarization: \(moved, privacy: .public) turns don't match their speaker, moved to \(label, privacy: .public)")
+        return DiarizationOutput(turns: turns, speakerDatabase: output.speakerDatabase)
     }
 
     public func prepareLiveEmbedder() async throws {
