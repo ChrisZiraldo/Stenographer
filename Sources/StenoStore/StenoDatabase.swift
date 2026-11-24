@@ -32,6 +32,7 @@ public enum StoreError: Error, LocalizedError, Equatable {
     case notFound(String)
     case speakersInDifferentRuns
     case noVoiceEmbedding
+    case invalid(String)
 
     public var errorDescription: String? {
         switch self {
@@ -39,6 +40,7 @@ public enum StoreError: Error, LocalizedError, Equatable {
         case .invalidTransition(let from, let to): "Invalid session transition \(from.rawValue) → \(to.rawValue)"
         case .notFound(let what): "\(what) not found"
         case .speakersInDifferentRuns: "Speakers belong to different transcripts"
+        case .invalid(let reason): reason
         }
     }
 }

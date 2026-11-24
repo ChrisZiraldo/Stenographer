@@ -11,6 +11,7 @@ struct TranscriptView: View {
     @State private var run: RunRecord?
     @State private var follow = true
     @State private var renaming: SpeakerRecord?
+    @State private var splitting: TranscriptLine?
     @State private var newName = ""
     @State private var canRemember = false
     @State private var remember = true
@@ -61,6 +62,21 @@ struct TranscriptView: View {
                 .opacity(0)
                 .allowsHitTesting(false)
         }
+        .sheet(item: $splitting) { line in
+            SplitLineSheet(
+                line: line, speakers: speakers,
+                assignToExisting: { range, speakerID in assign(line, range, to: speakerID) },
+                assignToNew: { range, name in
+                    do {
+                        guard let runID = session.currentRunId else { return }
+                        let speaker = try RunRepository(model.database).createSpeaker(runID: runID, displayName: name)
+                        assign(line, range, to: speaker.id)
+                    } catch {
+                        model.alert = error.localizedDescription
+                    }
+                },
+                cancel: { splitting = nil })
+        }
         .sheet(item: $renaming) { speaker in
             VStack(alignment: .leading, spacing: 12) {
                 Text("Rename \(speaker.name)").font(.headline)
@@ -99,6 +115,9 @@ struct TranscriptView: View {
                         .listRowBackground(rowBackground(line))
                         .contentShape(Rectangle())
                         .onTapGesture { playback.seek(to: line.start) }
+                        .contextMenu {
+                            Button("Reassign Part of Line…") { splitting = line }
+                        }
                         .id(line.id)
                 }
                 .onChange(of: query) {
@@ -242,6 +261,31 @@ struct TranscriptView: View {
         } catch {
             model.alert = "Transcript could not be loaded: \(error.localizedDescription)"
         }
+    }
+
+    private func assign(_ line: TranscriptLine, _ range: Range<Int>, to speakerID: String) {
+        do {
+            try RunRepository(model.database).assignWords(
+                utteranceID: line.id, range: range, to: speakerID, wordTimes: wordTimes(of: line))
+        } catch {
+            model.alert = error.localizedDescription
+        }
+        splitting = nil
+        reload()
+    }
+
+    /// Per-word times from the transcript file written by processing; nil when it can't be matched to the line.
+    private func wordTimes(of line: TranscriptLine) -> [ClosedRange<Double>]? {
+        guard let runID = session.currentRunId,
+            let doc = try? StenoJSON.read(
+                TranscriptDocument.self,
+                from: model.sessionDirectory(session).appendingPathComponent("runs/\(runID)/transcript.json"))
+        else { return nil }
+        let times = doc.words.map(\.word)
+            .filter { $0.track == line.track && $0.start >= line.start - 0.01 && $0.end <= line.end + 0.01 }
+            .sorted { $0.start < $1.start }
+            .map { $0.start...max($0.start, $0.end) }
+        return times.count == RunRepository.words(of: line.text).count ? times : nil
     }
 
     private func commitRename(_ speaker: SpeakerRecord) {

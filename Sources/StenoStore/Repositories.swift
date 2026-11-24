@@ -157,6 +157,79 @@ public struct RunRepository: Sendable {
         }
     }
 
+    /// Words of an utterance as shown in the transcript: its text split on whitespace.
+    public static func words(of text: String) -> [String] {
+        text.split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    /// Hands words `range` of utterance `utteranceID` to `speakerID`. Words before and after stay with the original
+    /// speaker as their own utterances. `wordTimes[i]` is the time span of word `i`; without it (or when the counts
+    /// disagree) the times are spread over the utterance by word length. A speaker left with no utterances is removed.
+    public func assignWords(
+        utteranceID: Int64, range: Range<Int>, to speakerID: String, wordTimes: [ClosedRange<Double>]? = nil
+    ) throws {
+        try db.writer.write { db in
+            guard let u = try UtteranceRecord.fetchOne(db, key: utteranceID) else { throw StoreError.notFound("Utterance") }
+            guard let target = try SpeakerRecord.fetchOne(db, key: speakerID) else { throw StoreError.notFound("Speaker") }
+            guard target.runId == u.runId else { throw StoreError.speakersInDifferentRuns }
+            let words = Self.words(of: u.text)
+            guard !range.isEmpty, range.lowerBound >= 0, range.upperBound <= words.count else {
+                throw StoreError.invalid("Choose at least one word of the line")
+            }
+            var pieces: [(speaker: String, words: Range<Int>)] = []
+            if range.lowerBound > 0 { pieces.append((u.speakerId, 0..<range.lowerBound)) }
+            pieces.append((speakerID, range))
+            if range.upperBound < words.count { pieces.append((u.speakerId, range.upperBound..<words.count)) }
+            if pieces.count == 1, speakerID == u.speakerId { return }
+            let times = wordTimes?.count == words.count ? wordTimes! : Self.estimatedTimes(words, start: u.startSec, end: u.endSec)
+            for (i, piece) in pieces.enumerated() {
+                var record = u
+                record.speakerId = piece.speaker
+                record.text = words[piece.words].joined(separator: " ")
+                record.startSec = i == 0 ? u.startSec : times[piece.words.lowerBound].lowerBound
+                record.endSec = i == pieces.count - 1 ? u.endSec : times[piece.words.upperBound - 1].upperBound
+                if i == 0 {
+                    try record.update(db)
+                } else {
+                    record.id = nil
+                    try record.insert(db)
+                }
+            }
+            try db.execute(
+                sql: """
+                    DELETE FROM speaker WHERE run_id = ? AND is_me = 0
+                    AND id NOT IN (SELECT speaker_id FROM utterance WHERE run_id = ?)
+                    """, arguments: [u.runId, u.runId])
+        }
+    }
+
+    /// Adds a speaker named `displayName` to the run, for people the diarizer never separated.
+    public func createSpeaker(runID: String, displayName: String) throws -> SpeakerRecord {
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw StoreError.invalid("Enter a name for the new speaker") }
+        return try db.writer.write { db in
+            let existing = try SpeakerRecord.filter(Column("run_id") == runID).fetchAll(db)
+            // "X" labels never clash with diarizer labels (S1, S2, …), whose voices are stored under those names.
+            var n = 1
+            while existing.contains(where: { $0.label == "X\(n)" }) { n += 1 }
+            let speaker = SpeakerRecord(
+                id: "\(runID):X\(n)", runId: runID, label: "X\(n)", displayName: name, isMe: false,
+                colorIndex: (existing.map(\.colorIndex).max() ?? -1) + 1)
+            try speaker.insert(db)
+            return speaker
+        }
+    }
+
+    static func estimatedTimes(_ words: [String], start: Double, end: Double) -> [ClosedRange<Double>] {
+        let total = Double(words.reduce(0) { $0 + $1.count + 1 })
+        var at = 0.0
+        return words.map { word in
+            let a = start + (end - start) * at / total
+            at += Double(word.count + 1)
+            return a...(start + (end - start) * at / total)
+        }
+    }
+
     public func utterances(runID: String) throws -> [TranscriptLine] {
         try db.writer.read { db in
             let speakers = Dictionary(
