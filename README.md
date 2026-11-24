@@ -2,13 +2,28 @@
 
 A native macOS app that records meetings, transcribes them locally, labels who said what, and turns them into notes. Audio is processed on-device; nothing leaves your Mac unless you point note generation at a remote LLM.
 
+## Download
+
+Get the latest build from the [Releases page](https://github.com/ChrisZiraldo/Stenographer/releases/latest) (`Stenographer-<version>.zip`, Apple Silicon, macOS 26 or later).
+
+1. Unzip and drag `Stenographer.app` into `/Applications`.
+2. The app is not notarized, so clear the quarantine flag once, then open it:
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/Stenographer.app
+   ```
+   (Or open it, let macOS block it, then System Settings → Privacy & Security → Open Anyway.)
+3. Allow Microphone and System Audio Recording when asked. Each release is signed differently, so macOS asks again after you update.
+4. The first launch downloads about 1 GB of speech models.
+
+## Features
+
 - **Capture:** system audio through Core Audio process taps plus your microphone, written continuously to crash-safe 16 kHz WAV parts with sample-aligned timing. Device changes and sleep start a new part; a crash is repaired on next launch.
-- **Transcription:** Parakeet TDT 0.6B v3 via [FluidAudio](https://github.com/FluidInference/FluidAudio) (Core ML / Neural Engine). Live captions while recording.
+- **Transcription:** Parakeet TDT 0.6B v3 via [FluidAudio](https://github.com/FluidInference/FluidAudio) (Core ML / Neural Engine). Live captions while recording, with speakers named from your saved voices ("Speaker N" for people it doesn't know). Recording mode, microphone and live captions are switchable from the toolbar.
 - **Speakers:** pyannote community-1 diarization. Name a speaker once and choose "Remember this voice"; later meetings are labelled automatically. A People panel lists everyone with their meeting history.
 - **Notes:** your own formatted notes (bold, italic, underline, font, size, color, alignment) plus AI-generated notes from templates, using a built-in llama.cpp model (downloaded once from Settings → AI, then fully offline; no Ollama needed), Apple's on-device model, or any OpenAI-compatible endpoint (Ollama, LM Studio, cloud). Markdown export.
 - **Isolation:** speech models run in an XPC worker, so a model crash never takes down a recording.
 
-## Requirements
+## Requirements (building from source)
 
 macOS 26, Apple Silicon, Xcode 27 / Swift 6.4, [xcodegen](https://github.com/yonaskolb/XcodeGen). The first run downloads about 1 GB of speech models from Hugging Face.
 
@@ -52,11 +67,14 @@ Everything lives in `~/Library/Application Support/Stenographer/`: a SQLite inde
 | `Sources/StenoXPC` | App/worker XPC protocols |
 | `Sources/steno` | CLI |
 | `App/` | SwiftUI app and XPC worker (xcodegen project) |
+| `Scripts/` | Release build (`dist.sh`), CLI signing, fixtures, capture check |
+| `.github/workflows/` | Release workflow |
+| `VERSION` | Version number; changing it on `main` cuts a release |
 | `assets/` | Icon and logo source art |
 
 ## Releases
 
-Bump the number in `VERSION` and push to `main`. `.github/workflows/release.yml` builds `Scripts/dist.sh` on a macOS 26 runner and publishes a GitHub Release `v<VERSION>` with `Stenographer-<VERSION>.zip`. If that tag already exists, nothing happens. The build is ad-hoc signed, not notarized, so downloaders follow `OPEN-ME.txt` in the zip, and macOS asks for microphone and system-audio access again after each update. Run `bash Scripts/dist.sh` to build the same zip locally into `dist/`.
+Bump the number in `VERSION` and push to `main`. `.github/workflows/release.yml` builds `Scripts/dist.sh` on a macOS 26 runner and publishes a GitHub Release `v<VERSION>` with `Stenographer-<VERSION>.zip`. If that tag already exists, nothing happens. The build is ad-hoc signed and not notarized; the zip includes an `OPEN-ME.txt` with the steps under [Download](#download). Run `bash Scripts/dist.sh` to build the same zip locally into `dist/`.
 
 ## Coming from v1
 
