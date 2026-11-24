@@ -17,7 +17,7 @@ public struct NoteTemplate: Sendable, Hashable, Identifiable {
     public static func named(_ id: String) -> NoteTemplate? { all.first { $0.id == id } }
 }
 
-/// Prompt text ported from v1 `src/notes-prompt.js` (`buildMergePrompt`, `buildAutoTitlePrompt`).
+/// Prompts for merging notes with a transcript and for titling a meeting.
 public enum NotePrompts {
     public static func mergeSystem(template: NoteTemplate) -> String {
         let meetingTypeHint =

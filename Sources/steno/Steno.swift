@@ -7,7 +7,7 @@ import StenoPipeline
 struct Steno: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "steno",
-        abstract: "Stenographer v2 audio core.",
+        abstract: "Stenographer audio core.",
         subcommands: [
             Transcribe.self, Diarize.self, Devices.self, Record.self, Recover.self, Finalize.self, Import.self,
             Process.self, Notes.self, LiveReplay.self,

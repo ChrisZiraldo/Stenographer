@@ -137,10 +137,6 @@ Bump the number in `VERSION` and push to `main`. `.github/workflows/release.yml`
 
 Issues and pull requests are welcome. Before opening a PR, run `swift build && swift test` and, for app changes, build the Release app as above. Keep changes focused, and add a test when you fix a bug or change behavior that other code relies on.
 
-## Coming from v1
-
-The original Electron app is tagged [`v1-final`](https://github.com/ChrisZiraldo/Stenographer/tree/v1-final). There is no importer.
-
 ## Acknowledgements
 
 Built on [FluidAudio](https://github.com/FluidInference/FluidAudio) (Parakeet and pyannote on Core ML), [llama.cpp](https://github.com/ggml-org/llama.cpp) via [llama.swift](https://github.com/mattt/llama.swift), [GRDB](https://github.com/groue/GRDB.swift), [swift-markdown-ui](https://github.com/gonzalezreal/swift-markdown-ui) and [swift-argument-parser](https://github.com/apple/swift-argument-parser).

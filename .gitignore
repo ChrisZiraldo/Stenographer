@@ -8,12 +8,6 @@ App/*/*.entitlements
 # Generated test fixtures
 Fixtures/generated/
 
-# Environment - may contain API keys
-.env
-
-# Recordings - generated output, not source
-recordings/
-
 # macOS
 .DS_Store
 dist/
