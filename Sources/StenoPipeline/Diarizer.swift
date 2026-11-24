@@ -36,7 +36,7 @@ public actor Diarizer {
 
     /// A turn this far from its speaker's voice (cosine distance) is a different person the clustering absorbed.
     /// Measured on a 32-minute call: 90% of the dominant speaker's turns are under 0.48; a different person's
-    /// reply was 0.62 and 1.03.
+    /// reply was 0.62 and 1.03. Across 13 sessions it flags 1.8% of turns of 2 s or more.
     static let outlierDistance: Float = 0.6
     /// Shorter clips give embeddings too noisy to judge.
     static let outlierMinTurnSeconds = 2.0
@@ -45,29 +45,43 @@ public actor Diarizer {
     /// to the speaker whose cluster absorbed them. The extra speaker has no stored voice: its turns come from
     /// several people, so it must not be matched against, or saved to, the voice library.
     func separatingOutliers(_ output: DiarizationOutput, file: URL) async throws -> DiarizationOutput {
-        let candidates = output.turns.indices.filter {
-            output.turns[$0].end - output.turns[$0].start >= Self.outlierMinTurnSeconds
-                && output.speakerDatabase[output.turns[$0].speaker] != nil
-        }
+        let candidates = Self.outlierCandidates(in: output)
         guard !candidates.isEmpty else { return output }
         nonisolated(unsafe) let manager = try await embedder()
         let source = try AudioSourceFactory().makeDiskBackedSource(from: file, targetSampleRate: 16_000).source
         let embeddings = try await manager.embedSpans(
             audioSource: source, spans: candidates.map { output.turns[$0].start..<output.turns[$0].end })
+        let result = Self.movingOutliers(in: output, candidates: candidates, embeddings: embeddings)
+        let moved = zip(output.turns, result.turns).filter { $0.speaker != $1.speaker }.count
+        if moved > 0 {
+            StenoLog.pipeline.info("Diarization: \(moved, privacy: .public) turns don't match their speaker's voice")
+        }
+        return result
+    }
+
+    /// Indices of turns long enough to judge whose speaker has a stored voice.
+    static func outlierCandidates(in output: DiarizationOutput) -> [Int] {
+        output.turns.indices.filter {
+            output.turns[$0].end - output.turns[$0].start >= outlierMinTurnSeconds
+                && output.speakerDatabase[output.turns[$0].speaker] != nil
+        }
+    }
+
+    /// `embeddings[i]` is the voice of `output.turns[candidates[i]]`. Returns `output` unchanged when nothing is
+    /// an outlier or the counts disagree.
+    static func movingOutliers(
+        in output: DiarizationOutput, candidates: [Int], embeddings: [[Float]]
+    ) -> DiarizationOutput {
         guard embeddings.count == candidates.count else { return output }
         let centroids = output.speakerDatabase.mapValues(VoiceVector.normalized)
-        var turns = output.turns
         let label = "S\(output.speakerDatabase.count + 1)"
-        var moved = 0
+        var turns = output.turns
         for (index, embedding) in zip(candidates, embeddings) {
             guard let centroid = centroids[turns[index].speaker],
-                VoiceVector.cosineDistance(VoiceVector.normalized(embedding), centroid) > Self.outlierDistance
+                VoiceVector.cosineDistance(VoiceVector.normalized(embedding), centroid) > outlierDistance
             else { continue }
             turns[index].speaker = label
-            moved += 1
         }
-        guard moved > 0 else { return output }
-        StenoLog.pipeline.info("Diarization: \(moved, privacy: .public) turns don't match their speaker, moved to \(label, privacy: .public)")
         return DiarizationOutput(turns: turns, speakerDatabase: output.speakerDatabase)
     }
 
