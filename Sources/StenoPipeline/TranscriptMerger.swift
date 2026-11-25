@@ -10,6 +10,10 @@ public enum TranscriptMerger {
     static let hardBreakSeconds = 45.0
     static let echoWindowSeconds = 1.0
     static let echoOverlapRatio = 0.6
+    /// How far apart (start to start) a mic word and the system word it echoes can be.
+    static let echoWordWindowSeconds = 1.5
+    /// A run of echoed words inside a longer mic line must be at least this long to be dropped.
+    static let echoRunMinWords = 4
 
     public static func merge(
         runID: UUID, mode: CaptureMode, asr: [TrackKind: [ASRWord]], turns: [SpeakerTurn], diarizer: String,
@@ -29,8 +33,17 @@ public enum TranscriptMerger {
             let systemWords = asr[.system] ?? []
             let mic = micWords.sorted { $0.start < $1.start }.map { TranscriptWord(word: $0, speaker: meSpeaker) }
             for utterance in buildUtterances(mic) where !isEcho(utterance, systemWords: systemWords) {
-                utterances.append(utterance)
-                words += mic.filter { $0.word.start >= utterance.start && $0.word.end <= utterance.end }
+                let inside = mic.filter { $0.word.start >= utterance.start && $0.word.end <= utterance.end }
+                // The other person leaking into the mic right before you answer is echo inside a longer line.
+                let echoed = echoWordIndices(in: inside.map(\.word), systemWords: systemWords)
+                if echoed.isEmpty {
+                    utterances.append(utterance)
+                    words += inside
+                } else {
+                    let kept = inside.enumerated().filter { !echoed.contains($0.offset) }.map(\.element)
+                    utterances += buildUtterances(kept)
+                    words += kept
+                }
             }
         }
 
@@ -125,6 +138,51 @@ public enum TranscriptMerger {
             shared += 1
         }
         return Double(shared) / Double(mine.count) >= echoOverlapRatio
+    }
+
+    /// Indices of mic words that repeat the system track's words said around the same time, found as runs: at least
+    /// `echoRunMinWords` words, never two missing words in a row, and `echoOverlapRatio` of them matched.
+    static func echoWordIndices(in micWords: [ASRWord], systemWords: [ASRWord]) -> Set<Int> {
+        var candidates: [String: [(start: Double, index: Int)]] = [:]
+        for (index, word) in systemWords.enumerated() {
+            if let token = tokens(word.text).first { candidates[token, default: []].append((word.start, index)) }
+        }
+        var used = Set<Int>()
+        let matched: [Bool] = micWords.map { word in
+            guard let token = tokens(word.text).first else { return false }
+            let best = (candidates[token] ?? [])
+                .filter { !used.contains($0.index) && abs($0.start - word.start) <= echoWordWindowSeconds }
+                .min { abs($0.start - word.start) < abs($1.start - word.start) }
+            guard let best else { return false }
+            used.insert(best.index)
+            return true
+        }
+        var echoed = Set<Int>()
+        var i = 0
+        while i < matched.count {
+            guard matched[i] else {
+                i += 1
+                continue
+            }
+            var last = i
+            var misses = 0
+            var j = i + 1
+            while j < matched.count {
+                if matched[j] {
+                    last = j
+                    misses = 0
+                } else {
+                    misses += 1
+                    if misses > 1 { break }
+                }
+                j += 1
+            }
+            let count = last - i + 1
+            let hits = matched[i...last].filter { $0 }.count
+            if count >= echoRunMinWords, Double(hits) / Double(count) >= echoOverlapRatio { echoed.formUnion(i...last) }
+            i = last + 1
+        }
+        return echoed
     }
 
     static func tokens(_ text: String) -> [String] {

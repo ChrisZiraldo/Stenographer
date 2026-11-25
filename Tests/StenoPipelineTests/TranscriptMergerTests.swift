@@ -114,3 +114,48 @@ private func words(_ sentence: String, from start: Double, step: Double = 0.3, t
         #expect(!TranscriptMerger.isEcho(mine, systemWords: system))
     }
 }
+
+@Suite struct PartialEchoTests {
+    private func merge(mic: [ASRWord], system: [ASRWord]) -> TranscriptDocument {
+        TranscriptMerger.merge(
+            runID: UUID(), mode: .call, asr: [.mic: mic, .system: system],
+            turns: [SpeakerTurn(speaker: "S1", start: 0, end: 12)], diarizer: "test", diarizationError: nil)
+    }
+
+    @Test func echoAtTheStartOfALongerMicLineIsDroppedAndTheAnswerKept() {
+        let echo = "so Daniel tells me you guys talk about this maybe"
+        let answer = "I think it could be good for me"
+        // The other person's words reach the mic about 0.9 s before the system track hears them, and you answer at once.
+        let mic = words(echo, from: 1.0, track: .mic) + words(answer, from: 1.0 + 9 * 0.3, track: .mic)
+        let system = words(echo, from: 1.9, track: .system)
+        let doc = merge(mic: mic, system: system)
+        #expect(doc.utterances.filter { $0.track == .mic }.map(\.text) == [answer])
+        #expect(doc.utterances.filter { $0.track == .system }.map(\.text) == [echo])
+        #expect(doc.words.filter { $0.word.track == .mic }.count == answer.split(separator: " ").count)
+    }
+
+    @Test func echoInTheMiddleSplitsTheMicLineAroundIt() {
+        let before = "right so let me add"
+        let echo = "the payment migration is a real risk"
+        let after = "okay that works for me"
+        let mic = words(before, from: 1, track: .mic) + words(echo, from: 2.2, track: .mic)
+            + words(after, from: 4.3, track: .mic)
+        let doc = merge(mic: mic, system: words(echo, from: 2.8, track: .system))
+        #expect(doc.utterances.filter { $0.track == .mic }.map(\.text) == [before, after])
+    }
+
+    @Test func aShortCommonPhraseSharedWithTheOtherPersonIsKept() {
+        let mine = "yeah I think that works for me and I can take the ticket"
+        let mic = words(mine, from: 1, track: .mic)
+        let system = words("I think that is fine", from: 1.2, track: .system)  // 3 shared words in a row, under the minimum
+        let doc = merge(mic: mic, system: system)
+        #expect(doc.utterances.filter { $0.track == .mic }.map(\.text) == [mine])
+    }
+
+    @Test func unrelatedSpeechAroundTheSameTimeIsUntouched() {
+        let mine = "okay I will pick that up tomorrow morning"
+        let doc = merge(mic: words(mine, from: 1, track: .mic), system: words("the build is green again today", from: 1, track: .system))
+        #expect(doc.utterances.filter { $0.track == .mic }.map(\.text) == [mine])
+        #expect(doc.words.filter { $0.word.track == .mic }.count == 8)
+    }
+}
