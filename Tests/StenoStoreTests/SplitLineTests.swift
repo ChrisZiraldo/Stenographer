@@ -74,3 +74,55 @@ import StenoModel
         #expect(try summary(f, run).contains("X1: uh next Tuesday"))
     }
 }
+
+@Suite struct SplitLineEchoTests {
+    /// Kit speaks on the system track; the mic line is Kit's voice leaking in, followed by Chris answering.
+    private func setup() throws -> (f: Fixture, run: String, mic: Int64) {
+        let f = try Fixture()
+        let m = try f.makeSessionFolder(state: .captured)
+        try f.sessions.create(manifest: m)
+        let doc = TranscriptDocument(
+            runId: UUID(), asrModel: "test", diarizer: "test", diarizationError: nil,
+            speakers: [TranscriptSpeaker(id: "Me", isMe: true), TranscriptSpeaker(id: "S1", isMe: false)], words: [],
+            utterances: [
+                Utterance(speaker: "S1", track: .system, start: 10, end: 20, text: "so Daniel tells me how are you feeling about that"),
+                Utterance(speaker: "Me", track: .mic, start: 9.5, end: 40, text: "so Daniel tells me how are you feeling about that I think it could be good for me"),
+            ])
+        try f.runs.save(document: doc, sessionID: m.id.uuidString)
+        let run = doc.runId.uuidString
+        return (f, run, try f.runs.utterances(runID: run).first { $0.track == .mic }!.id)
+    }
+
+    private func summary(_ f: Fixture, _ run: String) throws -> [String] {
+        try f.runs.utterances(runID: run).map { "\($0.speaker.label): \($0.text)" }
+    }
+
+    @Test func microphoneEchoGivenToTheSpeakerIsDroppedNotDuplicated() throws {
+        let (f, run, mic) = try setup()
+        try f.runs.assignWords(utteranceID: mic, range: 0..<10, to: "\(run):S1")
+        #expect(try summary(f, run) == [
+            "S1: so Daniel tells me how are you feeling about that", "Me: I think it could be good for me",
+        ])
+    }
+
+    @Test func microphoneWordsThatAreNotEchoAreReassigned() throws {
+        let (f, run, mic) = try setup()
+        try f.runs.assignWords(utteranceID: mic, range: 10..<13, to: "\(run):S1")  // "I think it", said by nobody else
+        #expect(try summary(f, run).contains("S1: I think it"))
+    }
+
+    @Test func removingWordsKeepsTheRestOfTheLine() throws {
+        let (f, run, mic) = try setup()
+        try f.runs.removeWords(utteranceID: mic, range: 0..<10)
+        #expect(try summary(f, run) == [
+            "S1: so Daniel tells me how are you feeling about that", "Me: I think it could be good for me",
+        ])
+    }
+
+    @Test func removingEveryWordDeletesTheLine() throws {
+        let (f, run, mic) = try setup()
+        try f.runs.removeWords(utteranceID: mic, range: 0..<18)
+        #expect(try summary(f, run) == ["S1: so Daniel tells me how are you feeling about that"])
+        #expect(try f.runs.speakers(runID: run).map(\.label) == ["Me", "S1"])  // Me is never removed
+    }
+}

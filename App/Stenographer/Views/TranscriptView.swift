@@ -75,6 +75,16 @@ struct TranscriptView: View {
                         model.alert = error.localizedDescription
                     }
                 },
+                remove: { range in
+                    do {
+                        try RunRepository(model.database).removeWords(
+                            utteranceID: line.id, range: range, wordTimes: wordTimes(of: line))
+                    } catch {
+                        model.alert = error.localizedDescription
+                    }
+                    splitting = nil
+                    reload()
+                },
                 cancel: { splitting = nil })
         }
         .sheet(item: $renaming) { speaker in
@@ -116,7 +126,7 @@ struct TranscriptView: View {
                         .contentShape(Rectangle())
                         .onTapGesture { playback.seek(to: line.start) }
                         .contextMenu {
-                            Button("Reassign Part of Line…") { splitting = line }
+                            Button("Reassign or Remove Part of Line…") { splitting = line }
                         }
                         .id(line.id)
                 }

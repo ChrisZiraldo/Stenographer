@@ -165,35 +165,61 @@ public struct RunRepository: Sendable {
     /// Hands words `range` of utterance `utteranceID` to `speakerID`. Words before and after stay with the original
     /// speaker as their own utterances. `wordTimes[i]` is the time span of word `i`; without it (or when the counts
     /// disagree) the times are spread over the utterance by word length. A speaker left with no utterances is removed.
+    /// Microphone words that repeat what another utterance says at the same time are speaker echo: they are dropped
+    /// instead of becoming a duplicate line.
     public func assignWords(
         utteranceID: Int64, range: Range<Int>, to speakerID: String, wordTimes: [ClosedRange<Double>]? = nil
     ) throws {
+        try rewrite(utteranceID: utteranceID, range: range, to: speakerID, wordTimes: wordTimes)
+    }
+
+    /// Deletes words `range` of an utterance (for example speaker echo); the rest of the line stays.
+    public func removeWords(utteranceID: Int64, range: Range<Int>, wordTimes: [ClosedRange<Double>]? = nil) throws {
+        try rewrite(utteranceID: utteranceID, range: range, to: nil, wordTimes: wordTimes)
+    }
+
+    private func rewrite(utteranceID: Int64, range: Range<Int>, to speakerID: String?, wordTimes: [ClosedRange<Double>]?) throws {
         try db.writer.write { db in
             guard let u = try UtteranceRecord.fetchOne(db, key: utteranceID) else { throw StoreError.notFound("Utterance") }
-            guard let target = try SpeakerRecord.fetchOne(db, key: speakerID) else { throw StoreError.notFound("Speaker") }
-            guard target.runId == u.runId else { throw StoreError.speakersInDifferentRuns }
+            if let speakerID {
+                guard let target = try SpeakerRecord.fetchOne(db, key: speakerID) else { throw StoreError.notFound("Speaker") }
+                guard target.runId == u.runId else { throw StoreError.speakersInDifferentRuns }
+            }
             let words = Self.words(of: u.text)
             guard !range.isEmpty, range.lowerBound >= 0, range.upperBound <= words.count else {
                 throw StoreError.invalid("Choose at least one word of the line")
             }
-            var pieces: [(speaker: String, words: Range<Int>)] = []
+            if speakerID == u.speakerId { return }
+            let times = wordTimes?.count == words.count ? wordTimes! : Self.estimatedTimes(words, start: u.startSec, end: u.endSec)
+            var pieces: [(speaker: String?, words: Range<Int>)] = []
             if range.lowerBound > 0 { pieces.append((u.speakerId, 0..<range.lowerBound)) }
             pieces.append((speakerID, range))
             if range.upperBound < words.count { pieces.append((u.speakerId, range.upperBound..<words.count)) }
-            if pieces.count == 1, speakerID == u.speakerId { return }
-            let times = wordTimes?.count == words.count ? wordTimes! : Self.estimatedTimes(words, start: u.startSec, end: u.endSec)
+
+            // Pieces that survive, with their time spans. The line keeps its original start and end.
+            var kept: [UtteranceRecord] = []
             for (i, piece) in pieces.enumerated() {
                 var record = u
-                record.speakerId = piece.speaker
                 record.text = words[piece.words].joined(separator: " ")
                 record.startSec = i == 0 ? u.startSec : times[piece.words.lowerBound].lowerBound
                 record.endSec = i == pieces.count - 1 ? u.endSec : times[piece.words.upperBound - 1].upperBound
-                if i == 0 {
-                    try record.update(db)
-                } else {
+                guard let speaker = piece.speaker else { continue }
+                record.speakerId = speaker
+                if piece.words == range, speaker != u.speakerId, record.track == .mic,
+                    try Self.isEcho(db, record)
+                {
+                    continue
+                }
+                kept.append(record)
+            }
+            if let first = kept.first {
+                try first.update(db)
+                for var record in kept.dropFirst() {
                     record.id = nil
                     try record.insert(db)
                 }
+            } else {
+                try u.delete(db)
             }
             try db.execute(
                 sql: """
@@ -201,6 +227,30 @@ public struct RunRepository: Sendable {
                     AND id NOT IN (SELECT speaker_id FROM utterance WHERE run_id = ?)
                     """, arguments: [u.runId, u.runId])
         }
+    }
+
+    /// True when most of the piece's words are said by non-microphone utterances at the same time (the same rule the
+    /// merger uses to drop echo: 60% of the words, or all of them for a line under three words).
+    private static func isEcho(_ db: Database, _ piece: UtteranceRecord) throws -> Bool {
+        let tokens = echoTokens(piece.text)
+        guard !tokens.isEmpty else { return false }
+        let others = try UtteranceRecord.filter(
+            Column("run_id") == piece.runId && Column("track") != TrackKind.mic.rawValue
+                && Column("end_sec") > piece.startSec - 1 && Column("start_sec") < piece.endSec + 1
+        ).fetchAll(db)
+        var pool: [String: Int] = [:]
+        for other in others { for t in echoTokens(other.text) { pool[t, default: 0] += 1 } }
+        var shared = 0
+        for t in tokens where pool[t, default: 0] > 0 {
+            pool[t]! -= 1
+            shared += 1
+        }
+        return tokens.count < 3 ? shared == tokens.count : Double(shared) / Double(tokens.count) >= 0.6
+    }
+
+    private static func echoTokens(_ text: String) -> [String] {
+        text.lowercased().split(whereSeparator: \.isWhitespace).map { $0.filter { $0.isLetter || $0.isNumber || $0 == "'" } }
+            .filter { !$0.isEmpty }
     }
 
     /// Adds a speaker named `displayName` to the run, for people the diarizer never separated.
