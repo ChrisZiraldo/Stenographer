@@ -48,6 +48,7 @@ Get the latest build from the [Releases page](https://github.com/ChrisZiraldo/St
 | 🗣️ **Who said what** | pyannote community-1 diarization. Name a speaker once and choose "Remember this voice"; later meetings are labelled automatically. A People panel lists everyone with their meeting history. |
 | 📝 **Formatted notes** | Write your own notes with bold, italic, underline, font, size, color and alignment, saved with each meeting. |
 | 🤖 **AI notes** | Generate notes from templates with a built-in llama.cpp model (downloaded once, then fully offline), Apple's on-device model, or any OpenAI-compatible endpoint (Ollama, LM Studio, cloud). Markdown export. |
+| 💬 **Right now** | While recording, a "Right now" tab keeps a running catch-up summary of the last few minutes (the current topic, what was just said, and any open question), refreshed every 30 seconds by default (configurable in Settings → AI). Uses your configured AI provider; a remote endpoint receives the live transcript text. |
 | 🔎 **Search** | Full-text search over titles, notes and transcripts. |
 | 🛡️ **Crash isolation** | Speech and language models run in an XPC worker, so a model crash never takes down a recording. |
 | 🎛️ **Quick controls** | Recording mode (call, in person, system audio only), microphone and live captions are one click away in the toolbar. |

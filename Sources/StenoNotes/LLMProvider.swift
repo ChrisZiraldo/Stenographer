@@ -164,9 +164,13 @@ public enum LLMSettings {
     public static let customModelID = "custom"
     public static let defaultBaseURL = "http://localhost:11434/v1"
     public static let defaultMaxPromptChars = 48_000
+    /// Seconds between "Right now" summaries while recording; 0 means only when Refresh is pressed.
+    public static let liveSummaryIntervalKey = "llm.liveSummaryInterval"
+    public static let defaultLiveSummaryInterval = 30
 
     public static func registerDefaults(_ defaults: UserDefaults = .standard) {
         defaults.register(defaults: [
+            liveSummaryIntervalKey: defaultLiveSummaryInterval,
             providerKey: AppleOnDeviceProvider.isAvailable ? "apple" : "local",
             localModelKey: LocalModelCatalog.default.id, localCustomPathKey: "",
             baseURLKey: defaultBaseURL, modelKey: "", maxPromptCharsKey: defaultMaxPromptChars,

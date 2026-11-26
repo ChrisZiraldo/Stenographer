@@ -4,12 +4,13 @@ import SwiftUI
 
 enum DetailTab: String, CaseIterable, Identifiable {
     case live = "Live"
+    case rightNow = "Right now"
     case transcript = "Transcript"
     case notes = "Notes"
     case generated = "Generated"
     var id: String { rawValue }
 
-    static let recording: [DetailTab] = [.live, .notes]
+    static let recording: [DetailTab] = [.live, .rightNow, .notes]
     static let finished: [DetailTab] = [.transcript, .notes, .generated]
 }
 
@@ -17,6 +18,7 @@ struct SessionDetailView: View {
     let model: AppModel
     let session: SessionRecord
     @State private var title = ""
+    @FocusState private var titleFocused: Bool
     @State private var tab = DetailTab.transcript
     @State private var playback = PlaybackController()
 
@@ -28,7 +30,8 @@ struct SessionDetailView: View {
                 TextField("Untitled", text: $title)
                     .textFieldStyle(.plain)
                     .font(.title2.weight(.semibold))
-                    .onSubmit { model.setTitle(session, title) }
+                    .focused($titleFocused)
+                    .onSubmit { commitTitle() }
                 statusLine
                 if !isLive, playback.isAvailable { PlaybackBar(playback: playback) }
             }
@@ -44,6 +47,7 @@ struct SessionDetailView: View {
             .padding(8)
             switch tabs.contains(tab) ? tab : tabs[0] {
             case .live: LiveCaptionsView(segments: model.recorder.liveSegments)
+            case .rightNow: RightNowView(model: model)
             case .transcript: TranscriptView(model: model, session: session, playback: playback)
             case .notes: NotesView(model: model, session: session)
             case .generated: GeneratedNotesView(model: model, session: session)
@@ -54,6 +58,10 @@ struct SessionDetailView: View {
             tab = isLive ? .live : .transcript
             loadPlayback()
         }
+        // Save a typed name as soon as the field loses focus or the tab changes, not only on Return, so
+        // generating notes never sees the meeting as untitled.
+        .onChange(of: titleFocused) { if !titleFocused { commitTitle() } }
+        .onChange(of: tab) { commitTitle() }
         .onChange(of: isLive) { tab = isLive ? .live : .transcript }
         .onChange(of: session.status) { loadPlayback() }
         .onChange(of: session.title) { title = session.title }
@@ -83,6 +91,10 @@ struct SessionDetailView: View {
         }
         .font(.callout)
         .foregroundStyle(.secondary)
+    }
+
+    private func commitTitle() {
+        if title != session.title { model.setTitle(session, title) }
     }
 
     private func loadPlayback() {

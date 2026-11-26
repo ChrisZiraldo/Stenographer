@@ -5,6 +5,8 @@ import SwiftUI
 struct SplitLineSheet: View {
     let line: TranscriptLine
     let speakers: [SpeakerRecord]
+    /// Names from the People list, offered when naming a new speaker.
+    let people: [String]
     /// Moves words `range` of the line to the existing speaker `speakerID`.
     let assignToExisting: (_ range: Range<Int>, _ speakerID: String) -> Void
     /// Moves words `range` of the line to a new speaker called `name`.
@@ -63,7 +65,10 @@ struct SplitLineSheet: View {
                 Text("Remove these words (echo or duplicate)").tag(Self.removeWords)
             }
             if choice == Self.newSpeaker {
-                TextField("Name of the new speaker", text: $newName)
+                HStack {
+                    TextField("Name of the new speaker", text: $newName)
+                    PeoplePickerMenu(names: people) { newName = $0 }
+                }
             }
             HStack {
                 Spacer()
