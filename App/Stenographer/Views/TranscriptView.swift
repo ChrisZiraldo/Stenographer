@@ -64,7 +64,7 @@ struct TranscriptView: View {
         }
         .sheet(item: $splitting) { line in
             SplitLineSheet(
-                line: line, speakers: speakers,
+                line: line, speakers: speakers, people: knownNames,
                 assignToExisting: { range, speakerID in assign(line, range, to: speakerID) },
                 assignToNew: { range, name in
                     do {
@@ -90,7 +90,10 @@ struct TranscriptView: View {
         .sheet(item: $renaming) { speaker in
             VStack(alignment: .leading, spacing: 12) {
                 Text("Rename \(speaker.name)").font(.headline)
-                TextField("Name", text: $newName).onSubmit { commitRename(speaker) }
+                HStack {
+                    TextField("Name", text: $newName).onSubmit { commitRename(speaker) }
+                    PeoplePickerMenu(names: knownNames) { newName = $0 }
+                }
                 if canRemember {
                     Toggle("Remember this voice for future meetings", isOn: $remember)
                 }
@@ -296,6 +299,11 @@ struct TranscriptView: View {
             .sorted { $0.start < $1.start }
             .map { $0.start...max($0.start, $0.end) }
         return times.count == RunRepository.words(of: line.text).count ? times : nil
+    }
+
+    /// Names from the People list, alphabetical.
+    private var knownNames: [String] {
+        ((try? SpeakerLibrary(model.database).all()) ?? []).map(\.name)
     }
 
     private func commitRename(_ speaker: SpeakerRecord) {

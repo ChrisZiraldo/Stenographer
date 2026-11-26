@@ -88,7 +88,8 @@ public struct NoteGenerator: Sendable {
                             GeneratedNoteRecord(
                                 sessionId: sessionID, templateId: template.id, provider: provider.id, model: provider.model,
                                 bodyMd: trimmed))
-                        if session.title.isEmpty {
+                        // Re-read the title: the user may have named the meeting while notes were generating.
+                        if try SessionRepository(database).get(id: sessionID)?.title.isEmpty ?? false {
                             let raw = try await provider.complete(
                                 system: "You write concise meeting titles.", prompt: NotePrompts.title(transcript: transcript, notes: notes))
                             let title = Self.cleanTitle(raw)

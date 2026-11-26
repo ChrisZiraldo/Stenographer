@@ -120,6 +120,7 @@ struct AISettings: View {
     @AppStorage(LLMSettings.baseURLKey) private var baseURL = LLMSettings.defaultBaseURL
     @AppStorage(LLMSettings.modelKey) private var modelName = ""
     @AppStorage(LLMSettings.maxPromptCharsKey) private var maxPromptChars = LLMSettings.defaultMaxPromptChars
+    @AppStorage(LLMSettings.liveSummaryIntervalKey) private var liveSummaryInterval = LLMSettings.defaultLiveSummaryInterval
     @State private var apiKey = Keychain.apiKey() ?? ""
     @State private var testOutput = ""
     @State private var testing = false
@@ -140,6 +141,17 @@ struct AISettings: View {
                     .onChange(of: apiKey) { Keychain.setAPIKey(apiKey) }
                 TextField("Max prompt characters", value: $maxPromptChars, format: .number)
             }
+            LabeledContent("Right now refresh") {
+                HStack(spacing: 6) {
+                    TextField("", value: $liveSummaryInterval, format: .number, prompt: Text("30"))
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 60)
+                    Text("seconds").foregroundStyle(.secondary)
+                }
+            }
+            Text("How often the Right now tab updates while recording. Minimum 5; 0 means only when you press Refresh.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button("Test") { test() }.disabled(testing)
                 if testing { ProgressView().controlSize(.small) }
